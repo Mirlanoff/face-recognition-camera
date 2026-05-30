@@ -2,59 +2,124 @@
 
 Real-time face recognition from an IP (RTSP) camera. Detects faces in the video stream and labels each known student by name inside a bounding box.
 
-## Features
+## Workflow
 
-- Connects to IP camera via RTSP
-- Recognizes registered students by name
-- Draws green box + name for known faces, red box + "Unknown" for unknown
-- Works on CPU (no GPU required)
-- Press `q` to quit
+1. **Register students** (one-time, ~10 students) — run `register.py`, capture each student's photo from the camera
+2. **Run recognition** — run `recognize.py`, see live video with names on each face
 
-## Quick start
+---
 
-### 1. Install dependencies
+## How to run in Visual Studio Code (step by step)
+
+### 1. Install Python 3.10 or 3.11
+
+Download from [python.org](https://www.python.org/downloads/) — **check "Add Python to PATH"** during install.
+
+> ⚠️ Use Python **3.10 or 3.11**. `face_recognition` / `dlib` may not work on 3.12+.
+
+### 2. Install VS Code extensions
+
+Open VS Code → Extensions (Ctrl+Shift+X) → install:
+- **Python** (by Microsoft)
+- **Pylance**
+
+### 3. Clone the project
+
+Open VS Code terminal (`Ctrl+` `) and run:
 
 ```bash
-# System packages (Ubuntu/Debian)
-sudo apt update
-sudo apt install -y python3-pip cmake build-essential libopenblas-dev liblapack-dev libx11-dev libgtk-3-dev
+git clone https://github.com/Mirlanoff/face-recognition-camera.git
+cd face-recognition-camera
+code .
+```
 
-# Python packages
+### 4. Create a virtual environment
+
+In VS Code terminal:
+
+**Windows:**
+```bash
+python -m venv venv
+venv\Scripts\activate
+```
+
+**Mac/Linux:**
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+VS Code will ask "Use this environment for the workspace?" — click **Yes**.
+
+### 5. Install system dependencies (only for `dlib`)
+
+**Windows:** install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) → select "Desktop development with C++".
+
+**Mac:**
+```bash
+brew install cmake
+```
+
+**Ubuntu/Linux:**
+```bash
+sudo apt update
+sudo apt install -y cmake build-essential libopenblas-dev liblapack-dev libx11-dev libgtk-3-dev
+```
+
+### 6. Install Python packages
+
+```bash
 pip install -r requirements.txt
 ```
 
-> On Windows: install Visual C++ Build Tools first. On macOS: `brew install cmake`.
+> If `dlib` fails to install — run `pip install cmake` first, then retry.
 
-### 2. Configure camera
+### 7. Configure the camera
 
 ```bash
+# Windows
+copy .env.example .env
+
+# Mac/Linux
 cp .env.example .env
-# Edit .env and set your RTSP_URL
 ```
 
-### 3. Add student photos
+Open `.env` and set your real RTSP URL (with password).
 
-Put one clear frontal photo per student in the `students/` folder. **Filename = student name.**
+### 8. Register students
 
-```
-students/
-├── Marlis.jpg
-├── Aizhan.jpg
-└── Bekzat.png
+```bash
+python register.py
 ```
 
-Tips:
-- One face per photo
-- Clear lighting, frontal angle
-- Use the student's name in Latin or Cyrillic — it will appear on the video as-is
+For each of your 10 students:
+1. Type their name → press Enter
+2. Camera window opens — position the student in frame (1 green box around face)
+3. Press **SPACE** to capture
+4. Press any key to continue → next student
+5. When done, press Enter without a name to finish
 
-### 4. Run
+All photos saved to `students/` folder.
+
+### 9. Run recognition
 
 ```bash
 python recognize.py
 ```
 
-A window opens showing the camera feed with recognized faces labeled.
+A window opens with the live camera. Each registered student gets a **green box + their name**. Unknown people get a **red box + "Unknown"**. Press **q** to quit.
+
+---
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `register.py` | Register students one-by-one from the camera |
+| `recognize.py` | Live recognition — main app |
+| `requirements.txt` | Python dependencies |
+| `.env.example` | Camera URL template |
+| `students/` | Folder with registered student photos (auto-created) |
 
 ## Configuration
 
@@ -68,13 +133,15 @@ Edit constants at the top of `recognize.py`:
 
 ## Troubleshooting
 
-**"Failed to open RTSP stream"** — check camera IP, credentials, and that you're on the same network.
+**"Failed to open RTSP stream"** — check camera IP, credentials in `.env`, same network as camera. Try opening the URL in [VLC Player](https://www.videolan.org/vlc/) first to verify.
 
-**Slow / laggy video** — increase `PROCESS_EVERY_N_FRAMES` to 5 or decrease `RESIZE_FACTOR` to 0.2.
+**`pip install` fails on `dlib`** — install C++ build tools (step 5), then `pip install cmake`, then retry.
 
-**Wrong recognition / many "Unknown"** — adjust `TOLERANCE` (try 0.5 for stricter, 0.6 for more lenient). Use better quality photos in `students/`.
+**Slow / laggy video** — increase `PROCESS_EVERY_N_FRAMES` to 5 or `RESIZE_FACTOR` to 0.2 in `recognize.py`.
 
-**`dlib` install fails** — install cmake first: `pip install cmake`, then retry `pip install -r requirements.txt`.
+**Too many "Unknown"** — adjust `TOLERANCE` (try 0.6 for more lenient). Re-register the student with better lighting.
+
+**Window doesn't open / camera freezes** — close, run again. If RTSP keeps dropping, `register.py` will fall back to your webcam automatically.
 
 ## License
 
