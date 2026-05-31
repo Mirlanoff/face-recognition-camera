@@ -1,6 +1,9 @@
 """
 Real-time multi-face recognition + emotion detection from IP camera (RTSP).
-Threaded pipeline: display thread is never blocked by detection/recognition.
+Threaded pipeline with decoder-load reduction:
+- Camera thread aggressively drains stale frames so we never display lagged video.
+- Frames are downscaled before display + recognition to reduce h264 decoder pressure.
+- Recognition runs in a background thread on the latest available frame.
 
 Run once:
 python download_emotion_model.py
@@ -12,7 +15,6 @@ python recognize.py
 import os
 import time
 import threading
-import queue
 import cv2
 import numpy as np
 import face_recognition
@@ -25,8 +27,8 @@ load_dotenv()
 
 # ===== Config =====
 RTSP_URL = os.getenv(
-    "RTSP_URL",
-    "rtsp://admin:Akniet12@192.168.205.14:554/h264/ch1/main/av_stream"
+"RTSP_URL",
+"rtsp://admin:Akniet12@192.168.205.14:554/h264/ch1/main/av_stream"
 )
 STUDENTS_DIR = Path("students")
 MODEL_PATH = Path("models") / "emotion-ferplus-8.onnx"
@@ -37,9 +39,12 @@ CONNECT_TIMEOUT_SECONDS = 10
 MP_MODEL_SELECTION = 1
 MP_MIN_CONFIDENCE = 0.5
 
-# Downscale frame before recognition to speed it up (recognition is the slow part).
-# 0.5 = process half-resolution. 0.4 even faster, 0.6 more accurate.
+# Downscale frame before recognition (recognition is the slow part).
 RECOGNITION_SCALE = 0.5
+
+# Downscale frame for DISPLAY too. Massively reduces decoder + drawing load.
+# Set to 1.0 to disable. 0.6 = 60% size on screen.
+DISPLAY_SCALE = 0.7
 
 EMOTION_LABELS = ["neutral", "happy", "surprise", "sad", "angry", "disgust", "fear", "contempt"]
 
@@ -75,8 +80,14 @@ def load_known_faces(folder):
 
 
 def open_rtsp(url):
+    # TCP transport + larger buffer for the decoder.
+    # max_delay + reorder_queue_size help with packet loss artifacts.
     os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-        "rtsp_transport;tcp|stimeout;" + str(CONNECT_TIMEOUT_SECONDS * 1000000)
+        "rtsp_transport;tcp"
+        "|stimeout;" + str(CONNECT_TIMEOUT_SECONDS * 1000000) +
+        "|max_delay;500000"
+        "|reorder_queue_size;0"
+        "|buffer_size;1024000"
     )
     cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
     try:
@@ -115,7 +126,11 @@ def predict_emotion(sess, gray_face_64):
 
 
 class CameraReader(threading.Thread):
-    """Reads frames as fast as the camera produces them, keeps only the latest."""
+    """
+    Drains the RTSP stream as fast as possible into a single-slot buffer.
+    Display + recognition always read the freshest frame; older ones are dropped.
+    This is what kills the 'lag when a person appears' problem.
+    """
     def __init__(self, url):
         super().__init__(daemon=True)
         self.url = url
@@ -124,26 +139,29 @@ class CameraReader(threading.Thread):
         self.latest = None
         self.running = True
         self.fail_count = 0
+        self.frames_read = 0
 
     def run(self):
         while self.running:
             if self.cap is None or not self.cap.isOpened():
-                time.sleep(0.5)
+                time.sleep(0.3)
                 self.cap = open_rtsp(self.url)
                 continue
             ret, frame = self.cap.read()
             if not ret:
                 self.fail_count += 1
-                if self.fail_count > 5:
+                if self.fail_count > 8:
                     try:
                         self.cap.release()
                     except Exception:
                         pass
+                    print("[!] Decoder unhealthy, reopening RTSP...")
                     self.cap = open_rtsp(self.url)
                     self.fail_count = 0
-                time.sleep(0.05)
+                time.sleep(0.02)
                 continue
             self.fail_count = 0
+            self.frames_read += 1
             with self.lock:
                 self.latest = frame
 
@@ -161,7 +179,6 @@ class CameraReader(threading.Thread):
 
 
 class Recognizer(threading.Thread):
-    """Background thread: pulls latest frame, detects + identifies + emotion. Updates shared results."""
     def __init__(self, camera, known_encodings, known_names, emotion_sess):
         super().__init__(daemon=True)
         self.camera = camera
@@ -173,7 +190,7 @@ class Recognizer(threading.Thread):
             min_detection_confidence=MP_MIN_CONFIDENCE,
         )
         self.lock = threading.Lock()
-        self.results = []  # list of (top, right, bottom, left, label, color)
+        self.results = []  # full-res coords: (top, right, bottom, left, label, color)
         self.scale_back = 1.0 / RECOGNITION_SCALE
         self.running = True
 
@@ -185,7 +202,6 @@ class Recognizer(threading.Thread):
                 continue
 
             try:
-                # Downscale frame for ALL detection/recognition work
                 small = cv2.resize(frame, (0, 0), fx=RECOGNITION_SCALE, fy=RECOGNITION_SCALE)
                 h_s, w_s = small.shape[:2]
                 rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
@@ -213,7 +229,6 @@ class Recognizer(threading.Thread):
                     encodings = []
 
                 for (top_s, right_s, bottom_s, left_s), enc in zip(boxes_small, encodings):
-                    # Identify
                     distances = face_recognition.face_distance(self.known_encodings, enc)
                     if len(distances) > 0:
                         best = int(np.argmin(distances))
@@ -221,13 +236,11 @@ class Recognizer(threading.Thread):
                     else:
                         name = "Unknown"
 
-                    # Scale box back to full-resolution coords for the display thread
                     top = int(top_s * self.scale_back)
                     right = int(right_s * self.scale_back)
                     bottom = int(bottom_s * self.scale_back)
                     left = int(left_s * self.scale_back)
 
-                    # Emotion from full-res crop
                     emotion = ""
                     if self.emotion_sess is not None:
                         face_bgr = frame[top:bottom, left:right]
@@ -243,7 +256,6 @@ class Recognizer(threading.Thread):
                 with self.lock:
                     self.results = new_results
             except Exception as e:
-                # Never let the worker die silently
                 print("[!] Recognizer error: " + str(e))
                 time.sleep(0.1)
 
@@ -261,7 +273,7 @@ class Recognizer(threading.Thread):
 
 def main():
     print("=" * 60)
-    print("Multi-Face Recognition + Emotion (threaded)")
+    print("Multi-Face Recognition + Emotion (threaded, decoder-friendly)")
     print("=" * 60)
 
     known_encodings, known_names = load_known_faces(STUDENTS_DIR)
@@ -275,7 +287,6 @@ def main():
     camera = CameraReader(RTSP_URL)
     camera.start()
 
-    # Wait briefly for first frame
     t0 = time.time()
     while camera.read() is None:
         if time.time() - t0 > CONNECT_TIMEOUT_SECONDS:
@@ -327,7 +338,13 @@ def main():
                 (10, 30), cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 255, 255), 1
             )
 
-            cv2.imshow("Recognition + Emotion (q to quit)", frame)
+            # Downscale just for display (massive decoder-load relief on the GUI side)
+            if DISPLAY_SCALE != 1.0:
+                disp = cv2.resize(frame, (0, 0), fx=DISPLAY_SCALE, fy=DISPLAY_SCALE)
+            else:
+                disp = frame
+
+            cv2.imshow("Recognition + Emotion (q to quit)", disp)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
     finally:
