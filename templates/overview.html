@@ -76,7 +76,6 @@
                         <div class="text-slate-500 text-xs" x-text="'Башталган: ' + formatTime(lesson.started_at)"></div>
                     </div>
 
-                    <!-- Attendees -->
                     <div class="mt-4 border-t pt-3">
                         <div class="text-xs font-medium text-slate-600 mb-2">Катышкан окуучулар:</div>
                         <div class="flex flex-wrap gap-2">
@@ -98,7 +97,6 @@
         </div>
     </div>
 
-    <!-- Live feed -->
     <div class="lg:col-span-1">
         <h2 class="text-xl font-semibold text-slate-800 mb-4">📡 Жандуу окуялар</h2>
         <div class="bg-white rounded-xl shadow p-4 h-96 overflow-y-auto">
@@ -117,7 +115,7 @@
     </div>
 </section>
 
-<!-- All classes -->
+<!-- Classes grid -->
 <section class="mb-10">
     <h2 class="text-xl font-semibold text-slate-800 mb-4">🏫 Мектептин бардык класстары</h2>
     <div class="grid grid-cols-3 md:grid-cols-6 lg:grid-cols-8 gap-3">
@@ -156,12 +154,21 @@
             </div>
             <div>
                 <label class="block text-sm font-medium text-slate-700 mb-1">Сүрөтү</label>
-                <input type="file" accept="image/*" @change="newStudent.photo = $event.target.files[0]" required
-                    class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm">
+                <div class="flex space-x-2">
+                    <input type="file" accept="image/*" @change="onFilePicked($event)"
+                        class="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm">
+                    <button type="button" @click="openWebcam()"
+                        class="bg-slate-700 hover:bg-slate-800 text-white px-3 py-2 rounded-lg text-sm whitespace-nowrap">
+                        📷 Веб-камера
+                    </button>
+                </div>
+                <div x-show="newStudent.previewUrl" class="mt-2">
+                    <img :src="newStudent.previewUrl" class="w-32 h-32 object-cover rounded-md border">
+                </div>
             </div>
             <div class="md:col-span-3 flex items-center justify-between">
                 <div class="text-sm" x-show="registerMsg" :class="registerOk ? 'text-green-600' : 'text-red-600'" x-text="registerMsg"></div>
-                <button type="submit" :disabled="registering"
+                <button type="submit" :disabled="registering || !newStudent.photo"
                     class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-medium shadow disabled:opacity-50">
                     <span x-show="!registering">✅ Каттоо</span>
                     <span x-show="registering">⏳ Иштеп жатат...</span>
@@ -194,8 +201,7 @@
 </section>
 
 <!-- Start lesson modal -->
-<div x-show="showStartLesson"
-     x-cloak
+<div x-show="showStartLesson" x-cloak
      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
     <div class="bg-white rounded-xl shadow-xl p-6 w-full max-w-md" @click.away="showStartLesson = false">
         <h3 class="text-lg font-semibold mb-4">🎯 Сабак баштоо</h3>
@@ -233,6 +239,34 @@
     </div>
 </div>
 
+<!-- Webcam modal -->
+<div x-show="showWebcam" x-cloak
+     class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
+    <div class="bg-white rounded-xl shadow-xl p-6 w-full max-w-lg" @click.away="closeWebcam()">
+        <h3 class="text-lg font-semibold mb-4">📷 Веб-камерадан сүрөт тартуу</h3>
+        <div class="bg-black rounded-lg overflow-hidden mb-3" style="aspect-ratio: 4/3;">
+            <video x-ref="video" autoplay playsinline muted x-show="!capturedDataUrl"
+                   class="w-full h-full object-cover"></video>
+            <img :src="capturedDataUrl" x-show="capturedDataUrl"
+                 class="w-full h-full object-cover">
+        </div>
+        <canvas x-ref="canvas" class="hidden"></canvas>
+        <div class="text-xs text-red-600 mb-2" x-show="webcamError" x-text="webcamError"></div>
+        <div class="flex justify-between">
+            <button type="button" @click="closeWebcam()"
+                class="px-4 py-2 rounded-lg bg-slate-200 hover:bg-slate-300">Жабуу</button>
+            <div class="space-x-2">
+                <button type="button" x-show="capturedDataUrl" @click="retake()"
+                    class="px-4 py-2 rounded-lg bg-yellow-500 hover:bg-yellow-600 text-white">↻ Кайра тартуу</button>
+                <button type="button" x-show="!capturedDataUrl" @click="snapshot()"
+                    class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium">📸 Сүрөт тартуу</button>
+                <button type="button" x-show="capturedDataUrl" @click="useSnapshot()"
+                    class="px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 text-white font-medium">✅ Колдонуу</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 </div>
 
 <script>
@@ -250,8 +284,12 @@ return {
     ws: null,
 
     showStartLesson: false,
+    showWebcam: false,
+    webcamStream: null,
+    webcamError: '',
+    capturedDataUrl: '',
 
-    newStudent: { full_name: '', class_id: '', photo: null },
+    newStudent: { full_name: '', class_id: '', photo: null, previewUrl: '' },
     registering: false,
     registerMsg: '',
     registerOk: false,
@@ -295,7 +333,8 @@ return {
         } else if (evt.type === 'alert') {
             html = '🚨 <b style="color:#dc2626">' + evt.message + '</b>';
         } else if (evt.type === 'worker_started') {
-            html = '📹 Камера ишке кирди (сабак #' + evt.lesson_id + ', ' + evt.roster_size + ' окуучу)';
+            const mode = evt.mode === 'mock' ? ' (СИМУЛЯЦИЯ)' : '';
+            html = '📹 Камера ишке кирди' + mode + ' (сабак #' + evt.lesson_id + ', ' + evt.roster_size + ' окуучу)';
             this.refresh();
         } else if (evt.type === 'worker_stopped') {
             html = '⏹️ Камера токтоду (сабак #' + evt.lesson_id + ')';
@@ -346,7 +385,76 @@ return {
         return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
     },
 
+    // ---- Photo from file ----
+    onFilePicked(ev) {
+        const f = ev.target.files[0];
+        if (!f) return;
+        this.newStudent.photo = f;
+        this.newStudent.previewUrl = URL.createObjectURL(f);
+    },
+
+    // ---- Webcam ----
+    async openWebcam() {
+        this.webcamError = '';
+        this.capturedDataUrl = '';
+        this.showWebcam = true;
+        try {
+            this.webcamStream = await navigator.mediaDevices.getUserMedia({
+                video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+                audio: false,
+            });
+            await this.$nextTick();
+            this.$refs.video.srcObject = this.webcamStream;
+        } catch (e) {
+            this.webcamError = '❌ Веб-камераны ачуу мүмкүн эмес: ' + e.message;
+        }
+    },
+
+    closeWebcam() {
+        if (this.webcamStream) {
+            this.webcamStream.getTracks().forEach(t => t.stop());
+            this.webcamStream = null;
+        }
+        this.showWebcam = false;
+        this.capturedDataUrl = '';
+    },
+
+    snapshot() {
+        const video = this.$refs.video;
+        const canvas = this.$refs.canvas;
+        if (!video || !video.videoWidth) {
+            this.webcamError = 'Видео даяр эмес, бир аз күтө туруңуз';
+            return;
+        }
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        this.capturedDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+    },
+
+    retake() {
+        this.capturedDataUrl = '';
+    },
+
+    async useSnapshot() {
+        if (!this.capturedDataUrl) return;
+        // Convert dataURL -> Blob -> File
+        const res = await fetch(this.capturedDataUrl);
+        const blob = await res.blob();
+        const filename = 'webcam_' + Date.now() + '.jpg';
+        this.newStudent.photo = new File([blob], filename, { type: 'image/jpeg' });
+        this.newStudent.previewUrl = this.capturedDataUrl;
+        this.closeWebcam();
+    },
+
+    // ---- Registration ----
     async registerStudent() {
+        if (!this.newStudent.photo) {
+            this.registerMsg = '❌ Сүрөт тандаңыз же тартыңыз';
+            this.registerOk = false;
+            return;
+        }
         this.registering = true;
         this.registerMsg = '';
         const fd = new FormData();
@@ -362,8 +470,8 @@ return {
             } else {
                 this.registerMsg = '✅ Ийгиликтүү катталды';
                 this.registerOk = true;
-                this.newStudent = { full_name: '', class_id: '', photo: null };
-                document.querySelector('input[type=file]').value = '';
+                this.newStudent = { full_name: '', class_id: '', photo: null, previewUrl: '' };
+                document.querySelectorAll('input[type=file]').forEach(el => el.value = '');
                 await this.refresh();
             }
         } catch (e) {
