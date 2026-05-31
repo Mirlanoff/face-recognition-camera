@@ -5,3 +5,9 @@ insightface
 numpy
 python-dotenv
 scikit-image
+fastapi
+uvicorn[standard]
+sqlalchemy
+jinja2
+python-multipart
+aiofiles
