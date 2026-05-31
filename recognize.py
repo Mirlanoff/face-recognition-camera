@@ -1,19 +1,28 @@
 """
-Real-time face recognition + emotion detection from IP camera (RTSP).
-Detects faces, identifies known students, and shows their current emotion.
+Real-time multi-face recognition + emotion detection from IP camera (RTSP).
+
+Stack:
+- MediaPipe FaceDetection (very fast, finds 10+ faces per frame on CPU)
+- face_recognition (identifies who is who using known student photos)
+- FER+ ONNX model via onnxruntime (emotion: happy/sad/angry/surprise/fear/disgust/neutral/contempt)
+
+Run once before first launch:
+python download_emotion_model.py
+
+Then:
+python recognize.py
 """
 
 import os
 import time
 import cv2
-import face_recognition
 import numpy as np
+import face_recognition
+import mediapipe as mp
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Suppress noisy TensorFlow logs
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-
 load_dotenv()
 
 # ===== Config =====
@@ -22,60 +31,43 @@ RTSP_URL = os.getenv(
     "rtsp://admin:Akniet12@192.168.205.14:554/h264/ch1/main/av_stream"
 )
 STUDENTS_DIR = Path("students")
+MODEL_PATH = Path("models") / "emotion-ferplus-8.onnx"
 TOLERANCE = 0.55
-# 0.5 = good balance between speed and far-distance detection (~3m)
-# 0.25 = faster but only sees close faces
-RESIZE_FACTOR = 0.5
-PROCESS_EVERY_N_FRAMES = 5
+PROCESS_EVERY_N_FRAMES = 3
 CONNECT_TIMEOUT_SECONDS = 10
-# Run emotion detection every N face-processing cycles (it is slower than recognition)
-EMOTION_EVERY_N_CYCLES = 2
+# MediaPipe model: 0 = short-range (within 2m), 1 = full-range (up to 5m). Pick 1 for classroom.
+MP_MODEL_SELECTION = 1
+MP_MIN_CONFIDENCE = 0.5
 
-# ===== Emotion detector (optional) =====
-EMOTION_ENABLED = True
-emotion_detector = None
-try:
-    from fer import FER
-    emotion_detector = FER(mtcnn=False)
-    print("[+] Emotion detection enabled.")
-except Exception as e:
-    EMOTION_ENABLED = False
-    print("[!] Emotion detection disabled (fer not installed): " + str(e))
+EMOTION_LABELS = ["neutral", "happy", "surprise", "sad", "angry", "disgust", "fear", "contempt"]
 
 
 def load_known_faces(folder):
     known_encodings = []
     known_names = []
-
     if not folder.exists():
-        print("[!] Folder '" + str(folder) + "' does not exist. Creating it.")
         folder.mkdir(parents=True, exist_ok=True)
-        print("[!] Put student photos here, then re-run.")
+        print("[!] Created empty students folder. Add photos and re-run.")
         return known_encodings, known_names
 
     photos = list(folder.glob("*.jpg")) + list(folder.glob("*.jpeg")) + list(folder.glob("*.png"))
-
     if not photos:
-        print("[!] No photos found in '" + str(folder) + "'.")
+        print("[!] No photos in students/.")
         return known_encodings, known_names
 
     for photo_path in photos:
         name = photo_path.stem
-        print("[+] Loading " + name + " from " + photo_path.name + "...")
-
+        print("[+] Loading " + name + "...")
         image = face_recognition.load_image_file(str(photo_path))
         encodings = face_recognition.face_encodings(image)
-
         if len(encodings) == 0:
-            print("    [!] No face found in " + photo_path.name + ", skipping.")
+            print("    [!] No face in " + photo_path.name + ", skipping.")
             continue
-
         known_encodings.append(encodings[0])
         known_names.append(name)
-        print("    [OK] Registered: " + name)
 
     print("")
-    print("[+] Loaded " + str(len(known_names)) + " students: " + ", ".join(known_names))
+    print("[+] " + str(len(known_names)) + " students loaded: " + ", ".join(known_names))
     print("")
     return known_encodings, known_names
 
@@ -92,47 +84,60 @@ def open_rtsp(url):
     return cap
 
 
-def detect_emotion(frame_bgr, top, right, bottom, left):
-    """Run emotion detection on a face crop. Returns label like 'happy' or ''."""
-    if not EMOTION_ENABLED or emotion_detector is None:
-        return ""
-    # Add some padding
-    h, w = frame_bgr.shape[:2]
-    pad = 20
-    y1 = max(0, top - pad)
-    y2 = min(h, bottom + pad)
-    x1 = max(0, left - pad)
-    x2 = min(w, right + pad)
-    face_crop = frame_bgr[y1:y2, x1:x2]
-    if face_crop.size == 0:
+def load_emotion_session():
+    if not MODEL_PATH.exists():
+        print("[!] Emotion model not found at " + str(MODEL_PATH))
+        print("    Run: python download_emotion_model.py")
+        return None
+    try:
+        import onnxruntime as ort
+        sess = ort.InferenceSession(str(MODEL_PATH), providers=["CPUExecutionProvider"])
+        print("[+] Emotion model loaded.")
+        return sess
+    except Exception as e:
+        print("[!] Could not load emotion model: " + str(e))
+        return None
+
+
+def predict_emotion(sess, gray_face_64):
+    """gray_face_64: 64x64 uint8 grayscale crop. Returns emotion label."""
+    if sess is None:
         return ""
     try:
-        result = emotion_detector.detect_emotions(face_crop)
-        if not result:
+        x = gray_face_64.astype(np.float32)
+        x = x.reshape(1, 1, 64, 64)
+        input_name = sess.get_inputs()[0].name
+        scores = sess.run(None, {input_name: x})[0]
+        idx = int(np.argmax(scores[0]))
+        if idx < 0 or idx >= len(EMOTION_LABELS):
             return ""
-        emotions = result[0]["emotions"]
-        top_emotion = max(emotions, key=emotions.get)
-        return top_emotion
+        return EMOTION_LABELS[idx]
     except Exception:
         return ""
 
 
 def main():
     print("=" * 60)
-    print("Face Recognition + Emotion - IP Camera")
+    print("Multi-Face Recognition + Emotion (MediaPipe + ONNX)")
     print("=" * 60)
 
     known_encodings, known_names = load_known_faces(STUDENTS_DIR)
-
     if len(known_encodings) == 0:
-        print("[!] No registered students. Add photos to 'students/' folder.")
+        print("[!] Add student photos to students/ and re-run.")
         return
+
+    emotion_sess = load_emotion_session()
+
+    mp_face = mp.solutions.face_detection
+    detector = mp_face.FaceDetection(
+        model_selection=MP_MODEL_SELECTION,
+        min_detection_confidence=MP_MIN_CONFIDENCE,
+    )
 
     print("[+] Connecting to camera (TCP): " + RTSP_URL)
     cap = open_rtsp(RTSP_URL)
-
     if not cap.isOpened():
-        print("[X] Failed to open RTSP stream.")
+        print("[X] Failed to open RTSP.")
         return
 
     ret, _ = cap.read()
@@ -145,10 +150,11 @@ def main():
     print("")
 
     frame_counter = 0
-    detection_cycle = 0
-    face_locations_full = []
-    face_labels = []
     consecutive_failures = 0
+    cached_results = []  # list of (top, right, bottom, left, label, color)
+    fps_t0 = time.time()
+    fps_n = 0
+    fps_value = 0.0
 
     while True:
         ret, frame = cap.read()
@@ -164,61 +170,86 @@ def main():
             continue
         consecutive_failures = 0
 
+        h, w = frame.shape[:2]
+
         if frame_counter % PROCESS_EVERY_N_FRAMES == 0:
-            small_frame = cv2.resize(frame, (0, 0), fx=RESIZE_FACTOR, fy=RESIZE_FACTOR)
-            rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            detections = detector.process(rgb)
 
-            face_locations_small = face_recognition.face_locations(rgb_small_frame, model="hog")
-            face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations_small)
+            new_results = []
 
-            scale = int(1 / RESIZE_FACTOR)
-            face_locations_full = []
-            new_labels = []
+            if detections.detections:
+                # Collect all face boxes first
+                boxes = []
+                for det in detections.detections:
+                    bbox = det.location_data.relative_bounding_box
+                    x1 = max(0, int(bbox.xmin * w))
+                    y1 = max(0, int(bbox.ymin * h))
+                    bw = int(bbox.width * w)
+                    bh = int(bbox.height * h)
+                    x2 = min(w, x1 + bw)
+                    y2 = min(h, y1 + bh)
+                    if x2 - x1 < 20 or y2 - y1 < 20:
+                        continue
+                    boxes.append((y1, x2, y2, x1))  # top, right, bottom, left
 
-            run_emotion = EMOTION_ENABLED and (detection_cycle % EMOTION_EVERY_N_CYCLES == 0)
-
-            for (top_s, right_s, bottom_s, left_s), face_encoding in zip(face_locations_small, face_encodings):
-                # Scale up to full-frame coords
-                top = top_s * scale
-                right = right_s * scale
-                bottom = bottom_s * scale
-                left = left_s * scale
-                face_locations_full.append((top, right, bottom, left))
-
-                # Identify
-                distances = face_recognition.face_distance(known_encodings, face_encoding)
-                if len(distances) > 0:
-                    best = np.argmin(distances)
-                    name = known_names[best] if distances[best] < TOLERANCE else "Unknown"
+                # Batch identity encodings for all boxes at once
+                if boxes:
+                    encodings = face_recognition.face_encodings(rgb, boxes)
                 else:
-                    name = "Unknown"
+                    encodings = []
 
-                # Emotion
-                emotion = ""
-                if run_emotion:
-                    emotion = detect_emotion(frame, top, right, bottom, left)
+                for (top, right, bottom, left), enc in zip(boxes, encodings):
+                    # Identify
+                    distances = face_recognition.face_distance(known_encodings, enc)
+                    if len(distances) > 0:
+                        best = int(np.argmin(distances))
+                        name = known_names[best] if distances[best] < TOLERANCE else "Unknown"
+                    else:
+                        name = "Unknown"
 
-                label = name + " (" + emotion + ")" if emotion else name
-                new_labels.append(label)
+                    # Emotion: crop, grayscale, resize to 64x64
+                    emotion = ""
+                    if emotion_sess is not None:
+                        face_bgr = frame[top:bottom, left:right]
+                        if face_bgr.size > 0:
+                            gray = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2GRAY)
+                            gray64 = cv2.resize(gray, (64, 64), interpolation=cv2.INTER_AREA)
+                            emotion = predict_emotion(emotion_sess, gray64)
 
-            face_labels = new_labels
-            detection_cycle += 1
+                    label = name + " (" + emotion + ")" if emotion else name
+                    color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+                    new_results.append((top, right, bottom, left, label, color))
 
-        # Draw using last known detection
-        for (top, right, bottom, left), label in zip(face_locations_full, face_labels):
-            is_known = not label.startswith("Unknown")
-            color = (0, 255, 0) if is_known else (0, 0, 255)
+            cached_results = new_results
 
+        # Draw cached results on every frame for smooth display
+        for (top, right, bottom, left, label, color) in cached_results:
             cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
-            cv2.rectangle(frame, (left, bottom - 35), (right, bottom), color, cv2.FILLED)
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, 0.6, 1)
+            cv2.rectangle(frame, (left, bottom), (left + tw + 12, bottom + th + 12), color, cv2.FILLED)
             cv2.putText(
                 frame, label,
-                (left + 6, bottom - 10),
-                cv2.FONT_HERSHEY_DUPLEX, 0.7,
+                (left + 6, bottom + th + 6),
+                cv2.FONT_HERSHEY_DUPLEX, 0.6,
                 (255, 255, 255), 1
             )
 
-        cv2.imshow("Face Recognition + Emotion (press q to quit)", frame)
+        # FPS counter
+        fps_n += 1
+        if fps_n >= 10:
+            now = time.time()
+            fps_value = fps_n / (now - fps_t0)
+            fps_t0 = now
+            fps_n = 0
+
+        cv2.putText(
+            frame,
+            "FPS: " + str(round(fps_value, 1)) + "  Faces: " + str(len(cached_results)),
+            (10, 30), cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 255, 255), 1
+        )
+
+        cv2.imshow("Recognition + Emotion (q to quit)", frame)
 
         frame_counter += 1
 
@@ -227,6 +258,7 @@ def main():
 
     cap.release()
     cv2.destroyAllWindows()
+    detector.close()
     print("")
     print("[+] Stopped.")
 
