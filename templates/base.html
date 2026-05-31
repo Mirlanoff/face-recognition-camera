@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ky">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>{% block title %}Мектеп таануу системасы{% endblock %}</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+    body { font-family: 'Segoe UI', system-ui, sans-serif; }
+    .tab-active { background-color: #1e40af; color: white; }
+    .tab-inactive { background-color: #f1f5f9; color: #334155; }
+    .tab-inactive:hover { background-color: #e2e8f0; }
+</style>
+</head>
+<body class="bg-slate-100 min-h-screen">
+
+<!-- Header -->
+<header class="bg-gradient-to-r from-blue-700 to-indigo-700 text-white shadow-lg">
+    <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+        <div class="flex items-center space-x-3">
+            <div class="text-3xl">🎓</div>
+            <div>
+                <h1 class="text-xl font-bold">Мектеп таануу системасы</h1>
+                <p class="text-blue-100 text-xs">Жасалма интеллект менен иштеген окуучуларды таануу</p>
+            </div>
+        </div>
+        <div class="text-sm text-blue-100">
+            <span x-data="{ time: '' }"
+                  x-init="setInterval(() => { time = new Date().toLocaleString('ru-RU') }, 1000)"
+                  x-text="time"></span>
+        </div>
+    </div>
+
+    <!-- Tabs -->
+    <nav class="max-w-7xl mx-auto px-6 pb-0">
+        <div class="flex space-x-2">
+            <a href="/" class="px-5 py-2 rounded-t-lg font-medium text-sm
+                {% if active_tab == 'overview' %}tab-active{% else %}tab-inactive{% endif %}">
+                📊 Көрүнүш
+            </a>
+            <a href="/analytics" class="px-5 py-2 rounded-t-lg font-medium text-sm
+                {% if active_tab == 'analytics' %}tab-active{% else %}tab-inactive{% endif %}">
+                📈 Аналитика
+            </a>
+            <a href="/alerts" class="px-5 py-2 rounded-t-lg font-medium text-sm
+                {% if active_tab == 'alerts' %}tab-active{% else %}tab-inactive{% endif %}">
+                🚨 Эскертүүлөр
+            </a>
+            <a href="/history" class="px-5 py-2 rounded-t-lg font-medium text-sm
+                {% if active_tab == 'history' %}tab-active{% else %}tab-inactive{% endif %}">
+                📚 Тарых
+            </a>
+        </div>
+    </nav>
+</header>
+
+<!-- Content -->
+<main class="max-w-7xl mx-auto px-6 py-8">
+    {% block content %}{% endblock %}
+</main>
+
+<footer class="text-center text-slate-500 text-xs py-6">
+    Диплом долбоору &middot; InsightFace + FastAPI &middot; 2026
+</footer>
+
+</body>
+</html>
