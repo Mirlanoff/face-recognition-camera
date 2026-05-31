@@ -1,0 +1,297 @@
+{% extends "base.html" %}
+
+{% block title %}Көрүнүш &middot; Мектеп таануу{% endblock %}
+
+{% block content %}
+<div x-data="overviewApp()" x-init="init()">
+
+<!-- Top stats -->
+<div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+    <div class="bg-white rounded-xl shadow p-5">
+        <div class="text-slate-500 text-xs uppercase tracking-wider">Бардык окуучулар</div>
+        <div class="text-3xl font-bold text-slate-800 mt-2" x-text="stats.total_students || 0"></div>
+    </div>
+    <div class="bg-white rounded-xl shadow p-5">
+        <div class="text-slate-500 text-xs uppercase tracking-wider">Класстар</div>
+        <div class="text-3xl font-bold text-slate-800 mt-2" x-text="stats.total_classes || 0"></div>
+    </div>
+    <div class="bg-white rounded-xl shadow p-5 ring-2 ring-green-400">
+        <div class="text-slate-500 text-xs uppercase tracking-wider">Активдүү сабактар</div>
+        <div class="text-3xl font-bold text-green-600 mt-2" x-text="stats.active_lessons || 0"></div>
+    </div>
+    <div class="bg-white rounded-xl shadow p-5">
+        <div class="text-slate-500 text-xs uppercase tracking-wider">Бүгүн сабак</div>
+        <div class="text-3xl font-bold text-slate-800 mt-2" x-text="stats.lessons_today || 0"></div>
+    </div>
+</div>
+
+<!-- Active lessons -->
+<section class="mb-10">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-xl font-semibold text-slate-800">🟢 Активдүү сабактар</h2>
+        <button @click="showStartLesson = true"
+            class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium shadow">
+            ➕ Сабак баштоо
+        </button>
+    </div>
+
+    <template x-if="activeLessons.length === 0">
+        <div class="bg-white rounded-xl shadow p-8 text-center text-slate-500">
+            Азыр активдүү сабак жок.
+        </div>
+    </template>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <template x-for="lesson in activeLessons" :key="lesson.id">
+            <div class="bg-white rounded-xl shadow p-5 border-l-4 border-green-500">
+                <div class="flex justify-between items-start">
+                    <div>
+                        <div class="text-xs text-slate-500" x-text="lesson.class_name"></div>
+                        <div class="text-lg font-semibold text-slate-800" x-text="lesson.subject_name"></div>
+                    </div>
+                    <button @click="stopLesson(lesson.id)"
+                        class="text-red-600 hover:text-red-800 text-xs font-medium">
+                        Аяктоо
+                    </button>
+                </div>
+                <div class="mt-3 flex items-center justify-between text-sm">
+                    <div class="text-slate-600">
+                        👥 <span x-text="lesson.students_seen"></span> / <span x-text="lesson.students_in_class"></span>
+                    </div>
+                    <div class="text-slate-500 text-xs" x-text="'Башталган: ' + formatTime(lesson.started_at)"></div>
+                </div>
+            </div>
+        </template>
+    </div>
+</section>
+
+<!-- All classes -->
+<section class="mb-10">
+    <h2 class="text-xl font-semibold text-slate-800 mb-4">🏫 Мектептин бардык класстары</h2>
+    <div class="grid grid-cols-3 md:grid-cols-6 lg:grid-cols-8 gap-3">
+        <template x-for="cls in classes" :key="cls.id">
+            <div class="bg-white rounded-lg shadow p-3 text-center hover:shadow-md cursor-pointer">
+                <div class="text-2xl font-bold text-blue-700" x-text="cls.name"></div>
+                <div class="text-xs text-slate-500 mt-1">
+                    <span x-text="cls.student_count"></span> окуучу
+                </div>
+            </div>
+        </template>
+    </div>
+</section>
+
+<!-- Student registration -->
+<section class="mb-10">
+    <h2 class="text-xl font-semibold text-slate-800 mb-4">👤 Окуучу каттоо</h2>
+
+    <div class="bg-white rounded-xl shadow p-6">
+        <form @submit.prevent="registerStudent" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+                <label class="block text-sm font-medium text-slate-700 mb-1">Аты-жөнү</label>
+                <input type="text" x-model="newStudent.full_name" required
+                    class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-400 focus:outline-none"
+                    placeholder="Марлис Мирланов">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-slate-700 mb-1">Класс</label>
+                <select x-model="newStudent.class_id" required
+                    class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-400 focus:outline-none">
+                    <option value="">— тандаңыз —</option>
+                    <template x-for="c in classes" :key="c.id">
+                        <option :value="c.id" x-text="c.name"></option>
+                    </template>
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-slate-700 mb-1">Сүрөтү</label>
+                <input type="file" accept="image/*" @change="newStudent.photo = $event.target.files[0]" required
+                    class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm">
+            </div>
+            <div class="md:col-span-3 flex items-center justify-between">
+                <div class="text-sm" x-show="registerMsg" :class="registerOk ? 'text-green-600' : 'text-red-600'" x-text="registerMsg"></div>
+                <button type="submit" :disabled="registering"
+                    class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-medium shadow disabled:opacity-50">
+                    <span x-show="!registering">✅ Каттоо</span>
+                    <span x-show="registering">⏳ Иштеп жатат...</span>
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Existing students -->
+    <div class="mt-6">
+        <h3 class="text-md font-semibold text-slate-700 mb-3">Катталган окуучулар (<span x-text="students.length"></span>)</h3>
+        <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+            <template x-for="s in students" :key="s.id">
+                <div class="bg-white rounded-lg shadow p-3 relative group">
+                    <img :src="s.photo_url" :alt="s.full_name" class="w-full h-32 object-cover rounded-md mb-2">
+                    <div class="text-sm font-medium text-slate-800 truncate" x-text="s.full_name"></div>
+                    <div class="text-xs text-slate-500" x-text="s.class_name"></div>
+                    <button @click="deleteStudent(s.id)"
+                        class="absolute top-1 right-1 bg-red-500 text-white rounded-full w-6 h-6 text-xs opacity-0 group-hover:opacity-100 transition">
+                        ✕
+                    </button>
+                </div>
+            </template>
+            <template x-if="students.length === 0">
+                <div class="col-span-full text-center text-slate-500 py-8">
+                    Окуучу катталган эмес.
+                </div>
+            </template>
+        </div>
+    </div>
+</section>
+
+<!-- Start lesson modal -->
+<div x-show="showStartLesson"
+     x-cloak
+     class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+    <div class="bg-white rounded-xl shadow-xl p-6 w-full max-w-md" @click.away="showStartLesson = false">
+        <h3 class="text-lg font-semibold mb-4">🎯 Сабак баштоо</h3>
+        <form @submit.prevent="startLesson">
+            <div class="mb-3">
+                <label class="block text-sm font-medium text-slate-700 mb-1">Класс</label>
+                <select x-model="newLesson.class_id" required
+                    class="w-full border border-slate-300 rounded-lg px-3 py-2">
+                    <option value="">— тандаңыз —</option>
+                    <template x-for="c in classes" :key="c.id">
+                        <option :value="c.id" x-text="c.name + ' (' + c.student_count + ' окуучу)'"></option>
+                    </template>
+                </select>
+            </div>
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-slate-700 mb-1">Сабак</label>
+                <select x-model="newLesson.subject_id" required
+                    class="w-full border border-slate-300 rounded-lg px-3 py-2">
+                    <option value="">— тандаңыз —</option>
+                    <template x-for="s in subjects" :key="s.id">
+                        <option :value="s.id" x-text="s.name"></option>
+                    </template>
+                </select>
+            </div>
+            <div class="text-sm text-red-600 mb-3" x-show="lessonMsg" x-text="lessonMsg"></div>
+            <div class="flex justify-end space-x-2">
+                <button type="button" @click="showStartLesson = false"
+                    class="px-4 py-2 rounded-lg bg-slate-200 hover:bg-slate-300">Жокко чыгаруу</button>
+                <button type="submit"
+                    class="px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 text-white font-medium">
+                    🚀 Баштоо
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+</div>
+
+<script>
+function overviewApp() {
+return {
+    stats: {},
+    classes: [],
+    subjects: [],
+    students: [],
+    activeLessons: [],
+
+    showStartLesson: false,
+
+    newStudent: { full_name: '', class_id: '', photo: null },
+    registering: false,
+    registerMsg: '',
+    registerOk: false,
+
+    newLesson: { class_id: '', subject_id: '' },
+    lessonMsg: '',
+
+    async init() {
+        await this.refresh();
+        setInterval(() => this.refresh(), 5000);
+    },
+
+    async refresh() {
+        try {
+            const [s, c, sub, st, al] = await Promise.all([
+                fetch('/api/overview').then(r => r.json()),
+                fetch('/api/classes').then(r => r.json()),
+                fetch('/api/subjects').then(r => r.json()),
+                fetch('/api/students').then(r => r.json()),
+                fetch('/api/lessons/active').then(r => r.json()),
+            ]);
+            this.stats = s;
+            this.classes = c;
+            this.subjects = sub;
+            this.students = st;
+            this.activeLessons = al;
+        } catch (e) { console.error(e); }
+    },
+
+    formatTime(iso) {
+        if (!iso) return '';
+        const d = new Date(iso + 'Z');
+        return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    },
+
+    async registerStudent() {
+        this.registering = true;
+        this.registerMsg = '';
+        const fd = new FormData();
+        fd.append('full_name', this.newStudent.full_name);
+        fd.append('class_id', this.newStudent.class_id);
+        fd.append('photo', this.newStudent.photo);
+        try {
+            const r = await fetch('/api/students', { method: 'POST', body: fd });
+            if (!r.ok) {
+                const err = await r.json();
+                this.registerMsg = '❌ ' + (err.detail || 'Ката');
+                this.registerOk = false;
+            } else {
+                this.registerMsg = '✅ Ийгиликтүү катталды';
+                this.registerOk = true;
+                this.newStudent = { full_name: '', class_id: '', photo: null };
+                document.querySelector('input[type=file]').value = '';
+                await this.refresh();
+            }
+        } catch (e) {
+            this.registerMsg = '❌ ' + e.message;
+            this.registerOk = false;
+        }
+        this.registering = false;
+    },
+
+    async deleteStudent(id) {
+        if (!confirm('Окуучуну өчүрөсүзбү?')) return;
+        await fetch('/api/students/' + id, { method: 'DELETE' });
+        await this.refresh();
+    },
+
+    async startLesson() {
+        this.lessonMsg = '';
+        const r = await fetch('/api/lessons/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                class_id: parseInt(this.newLesson.class_id),
+                subject_id: parseInt(this.newLesson.subject_id),
+            }),
+        });
+        if (!r.ok) {
+            const err = await r.json();
+            this.lessonMsg = err.detail || 'Ката';
+            return;
+        }
+        this.showStartLesson = false;
+        this.newLesson = { class_id: '', subject_id: '' };
+        await this.refresh();
+    },
+
+    async stopLesson(id) {
+        if (!confirm('Сабакты аяктайсызбы?')) return;
+        await fetch('/api/lessons/' + id + '/stop', { method: 'POST' });
+        await this.refresh();
+    },
+};
+}
+</script>
+
+<style>[x-cloak] { display: none !important; }</style>
+{% endblock %}
