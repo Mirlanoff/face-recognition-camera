@@ -25,7 +25,6 @@
     </div>
 </div>
 
-<!-- Connection status -->
 <div class="mb-4 text-xs flex items-center space-x-3">
     <span class="px-2 py-1 rounded"
           :class="wsStatus === 'connected' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'">
@@ -33,7 +32,7 @@
     </span>
 </div>
 
-<!-- Active lessons + live feed -->
+<!-- Active lessons + feed -->
 <section class="mb-10 grid grid-cols-1 lg:grid-cols-3 gap-6">
     <div class="lg:col-span-2">
         <div class="flex items-center justify-between mb-4">
@@ -239,19 +238,27 @@
     </div>
 </div>
 
-<!-- Webcam modal -->
+<!-- Webcam modal: video element ALWAYS in DOM so srcObject sticks; we toggle visibility, not display -->
 <div x-show="showWebcam" x-cloak
      class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
     <div class="bg-white rounded-xl shadow-xl p-6 w-full max-w-lg" @click.away="closeWebcam()">
         <h3 class="text-lg font-semibold mb-4">📷 Веб-камерадан сүрөт тартуу</h3>
-        <div class="bg-black rounded-lg overflow-hidden mb-3" style="aspect-ratio: 4/3;">
-            <video x-ref="video" autoplay playsinline muted x-show="!capturedDataUrl"
-                   class="w-full h-full object-cover"></video>
-            <img :src="capturedDataUrl" x-show="capturedDataUrl"
-                 class="w-full h-full object-cover">
+
+        <div class="relative bg-black rounded-lg overflow-hidden mb-3" style="aspect-ratio: 4/3;">
+            <video x-ref="video" autoplay playsinline muted
+                   class="w-full h-full object-cover"
+                   :style="capturedDataUrl ? 'visibility:hidden' : 'visibility:visible'"></video>
+            <img :src="capturedDataUrl"
+                 x-show="capturedDataUrl"
+                 class="absolute inset-0 w-full h-full object-cover">
         </div>
         <canvas x-ref="canvas" class="hidden"></canvas>
+
+        <div class="text-xs text-slate-500 mb-2" x-show="!capturedDataUrl && !webcamError">
+            <span x-text="webcamStatus"></span>
+        </div>
         <div class="text-xs text-red-600 mb-2" x-show="webcamError" x-text="webcamError"></div>
+
         <div class="flex justify-between">
             <button type="button" @click="closeWebcam()"
                 class="px-4 py-2 rounded-lg bg-slate-200 hover:bg-slate-300">Жабуу</button>
@@ -259,7 +266,8 @@
                 <button type="button" x-show="capturedDataUrl" @click="retake()"
                     class="px-4 py-2 rounded-lg bg-yellow-500 hover:bg-yellow-600 text-white">↻ Кайра тартуу</button>
                 <button type="button" x-show="!capturedDataUrl" @click="snapshot()"
-                    class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium">📸 Сүрөт тартуу</button>
+                    :disabled="!webcamReady"
+                    class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium disabled:opacity-50">📸 Сүрөт тартуу</button>
                 <button type="button" x-show="capturedDataUrl" @click="useSnapshot()"
                     class="px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 text-white font-medium">✅ Колдонуу</button>
             </div>
@@ -284,9 +292,13 @@ return {
     ws: null,
 
     showStartLesson: false,
+
+    // webcam
     showWebcam: false,
     webcamStream: null,
     webcamError: '',
+    webcamStatus: '',
+    webcamReady: false,
     capturedDataUrl: '',
 
     newStudent: { full_name: '', class_id: '', photo: null, previewUrl: '' },
@@ -385,7 +397,6 @@ return {
         return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
     },
 
-    // ---- Photo from file ----
     onFilePicked(ev) {
         const f = ev.target.files[0];
         if (!f) return;
@@ -397,16 +408,50 @@ return {
     async openWebcam() {
         this.webcamError = '';
         this.capturedDataUrl = '';
+        this.webcamReady = false;
+        this.webcamStatus = 'Веб-камера сурап жатат...';
+
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            this.webcamError = '❌ Веб-камера API жок. http://localhost же https колдонуңуз.';
+            this.showWebcam = true;
+            return;
+        }
+        if (location.protocol !== 'https:'
+            && location.hostname !== 'localhost'
+            && location.hostname !== '127.0.0.1') {
+            this.webcamError = '⚠️ Браузер веб-камераны ачпайт. Браузерден '
+                + 'http://localhost:8000 же http://127.0.0.1:8000 деп ачыңыз '
+                + '(азыр: ' + location.host + ').';
+            this.showWebcam = true;
+            return;
+        }
+
         this.showWebcam = true;
+        // Wait for the <video> element to be rendered (it's inside x-show wrapper)
+        await this.$nextTick();
+        await new Promise(r => setTimeout(r, 50));
+
         try {
             this.webcamStream = await navigator.mediaDevices.getUserMedia({
                 video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
                 audio: false,
             });
-            await this.$nextTick();
-            this.$refs.video.srcObject = this.webcamStream;
+            const v = this.$refs.video;
+            if (!v) {
+                this.webcamError = '❌ Видео элемент табылган жок';
+                return;
+            }
+            v.srcObject = this.webcamStream;
+            v.onloadedmetadata = () => {
+                v.play().catch(err => {
+                    this.webcamError = '❌ Видеону баштоо мүмкүн эмес: ' + err.message;
+                });
+                this.webcamReady = true;
+                this.webcamStatus = '✅ Камера даяр. "📸 Сүрөт тартуу" басыңыз.';
+            };
         } catch (e) {
-            this.webcamError = '❌ Веб-камераны ачуу мүмкүн эмес: ' + e.message;
+            this.webcamError = '❌ Веб-камераны ачуу мүмкүн эмес: ' + e.name + ' / ' + e.message;
+            console.error('getUserMedia failed:', e);
         }
     },
 
@@ -415,8 +460,13 @@ return {
             this.webcamStream.getTracks().forEach(t => t.stop());
             this.webcamStream = null;
         }
+        const v = this.$refs.video;
+        if (v) v.srcObject = null;
         this.showWebcam = false;
         this.capturedDataUrl = '';
+        this.webcamReady = false;
+        this.webcamError = '';
+        this.webcamStatus = '';
     },
 
     snapshot() {
@@ -439,7 +489,6 @@ return {
 
     async useSnapshot() {
         if (!this.capturedDataUrl) return;
-        // Convert dataURL -> Blob -> File
         const res = await fetch(this.capturedDataUrl);
         const blob = await res.blob();
         const filename = 'webcam_' + Date.now() + '.jpg';
@@ -448,7 +497,6 @@ return {
         this.closeWebcam();
     },
 
-    // ---- Registration ----
     async registerStudent() {
         if (!this.newStudent.photo) {
             this.registerMsg = '❌ Сүрөт тандаңыз же тартыңыз';
