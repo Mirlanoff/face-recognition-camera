@@ -4,6 +4,5 @@ python-dotenv==1.0.1
 Pillow
 Click
 face-recognition-models
-fer==22.5.1
-tensorflow==2.15.0
-moviepy==1.0.3
+mediapipe==0.10.14
+onnxruntime==1.17.3
