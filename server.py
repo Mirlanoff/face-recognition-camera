@@ -40,6 +40,7 @@ from models import (
 
 STUDENTS_DIR = Path("students")
 STUDENTS_DIR.mkdir(exist_ok=True)
+Path("static").mkdir(exist_ok=True)
 
 app = FastAPI(title="Мектеп таануу системасы")
 
@@ -77,30 +78,33 @@ def get_insightface():
 # ===== HTML pages =====
 @app.get("/", response_class=HTMLResponse)
 def overview_page(request: Request):
-    return templates.TemplateResponse("overview.html", {"request": request, "active_tab": "overview"})
+    return templates.TemplateResponse(request, "overview.html", {"active_tab": "overview"})
 
 
 @app.get("/analytics", response_class=HTMLResponse)
 def analytics_page(request: Request):
-    return templates.TemplateResponse("stub.html", {
-        "request": request, "active_tab": "analytics",
-        "title": "Аналитика", "message": "Бул бөлүм 3-этапта кошулат."
+    return templates.TemplateResponse(request, "stub.html", {
+        "active_tab": "analytics",
+        "title": "Аналитика",
+        "message": "Бул бөлүм 3-этапта кошулат.",
     })
 
 
 @app.get("/alerts", response_class=HTMLResponse)
 def alerts_page(request: Request):
-    return templates.TemplateResponse("stub.html", {
-        "request": request, "active_tab": "alerts",
-        "title": "Эскертүүлөр", "message": "Бул бөлүм 4-этапта кошулат."
+    return templates.TemplateResponse(request, "stub.html", {
+        "active_tab": "alerts",
+        "title": "Эскертүүлөр",
+        "message": "Бул бөлүм 4-этапта кошулат.",
     })
 
 
 @app.get("/history", response_class=HTMLResponse)
 def history_page(request: Request):
-    return templates.TemplateResponse("stub.html", {
-        "request": request, "active_tab": "history",
-        "title": "Тарых", "message": "Бул бөлүм 5-этапта кошулат."
+    return templates.TemplateResponse(request, "stub.html", {
+        "active_tab": "history",
+        "title": "Тарых",
+        "message": "Бул бөлүм 5-этапта кошулат.",
     })
 
 
