@@ -1,0 +1,385 @@
+{% extends "base.html" %}
+
+{% block title %}Тарых &middot; Мектеп таануу{% endblock %}
+
+{% block content %}
+<div x-data="historyPage()" x-init="init()" class="space-y-6">
+
+<!-- Filter bar -->
+<div class="bg-white rounded-xl shadow p-4">
+  <div class="flex flex-wrap gap-3 items-end">
+    <div>
+      <label class="block text-xs text-slate-500 mb-1">Класс</label>
+      <select x-model="filterClassId" @change="reload()"
+              class="border border-slate-300 rounded-lg px-3 py-2 text-sm min-w-[120px]">
+        <option value="">Бардыгы</option>
+        <template x-for="c in classes" :key="c.id">
+          <option :value="c.id" x-text="c.name"></option>
+        </template>
+      </select>
+    </div>
+    <div>
+      <label class="block text-xs text-slate-500 mb-1">Предмет</label>
+      <select x-model="filterSubjectId" @change="reload()"
+              class="border border-slate-300 rounded-lg px-3 py-2 text-sm min-w-[160px]">
+        <option value="">Бардыгы</option>
+        <template x-for="s in subjects" :key="s.id">
+          <option :value="s.id" x-text="s.name"></option>
+        </template>
+      </select>
+    </div>
+    <div>
+      <label class="block text-xs text-slate-500 mb-1">Башталышы</label>
+      <input type="date" x-model="filterDateFrom" @change="reload()"
+             class="border border-slate-300 rounded-lg px-3 py-2 text-sm">
+    </div>
+    <div>
+      <label class="block text-xs text-slate-500 mb-1">Аяктоо</label>
+      <input type="date" x-model="filterDateTo" @change="reload()"
+             class="border border-slate-300 rounded-lg px-3 py-2 text-sm">
+    </div>
+    <div class="flex gap-2 ml-auto">
+      <button @click="quickRange(7)"
+              class="text-xs bg-slate-100 hover:bg-slate-200 px-3 py-2 rounded-lg">7 күн</button>
+      <button @click="quickRange(30)"
+              class="text-xs bg-slate-100 hover:bg-slate-200 px-3 py-2 rounded-lg">30 күн</button>
+      <button @click="quickRange(0)"
+              class="text-xs bg-slate-100 hover:bg-slate-200 px-3 py-2 rounded-lg">Бүгүн</button>
+      <button @click="clearFilters()"
+              class="text-xs bg-slate-200 hover:bg-slate-300 px-3 py-2 rounded-lg">✕ Тазалоо</button>
+      <button @click="reload()"
+              class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg">
+        🔄 Жаңылоо
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- KPI cards -->
+<div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+  <div class="bg-white rounded-xl shadow p-5">
+    <div class="text-slate-500 text-xs uppercase font-medium">Сабактар</div>
+    <div class="text-3xl font-bold text-slate-800 mt-2" x-text="stats.total_lessons || 0"></div>
+  </div>
+  <div class="bg-white rounded-xl shadow p-5">
+    <div class="text-slate-500 text-xs uppercase font-medium">Орт. узактык</div>
+    <div class="text-3xl font-bold text-slate-800 mt-2">
+      <span x-text="stats.avg_duration_min || 0"></span>
+      <span class="text-base text-slate-500 font-normal">мүн.</span>
+    </div>
+  </div>
+  <div class="bg-white rounded-xl shadow p-5">
+    <div class="text-slate-500 text-xs uppercase font-medium">Орт. катышуу</div>
+    <div class="text-3xl font-bold text-slate-800 mt-2" x-text="stats.avg_students_per_lesson || 0"></div>
+  </div>
+  <div class="bg-white rounded-xl shadow p-5 border-l-4 border-red-500">
+    <div class="text-slate-500 text-xs uppercase font-medium">Эскертүүлөр</div>
+    <div class="text-3xl font-bold text-red-600 mt-2" x-text="stats.total_alerts || 0"></div>
+  </div>
+</div>
+
+<!-- Lessons table -->
+<div class="bg-white rounded-xl shadow overflow-hidden">
+  <div class="p-4 border-b border-slate-200 flex items-center justify-between">
+    <h3 class="text-lg font-bold text-slate-800">📚 Сабактардын тарыхы</h3>
+    <span class="text-sm text-slate-500" x-text="lessons.length + ' сабак'"></span>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-50 text-slate-600 text-left">
+        <tr>
+          <th class="px-3 py-2">Күн</th>
+          <th class="px-3 py-2">Предмет</th>
+          <th class="px-3 py-2">Класс</th>
+          <th class="px-3 py-2">Башталган</th>
+          <th class="px-3 py-2">Узактык</th>
+          <th class="px-3 py-2">Катышкан</th>
+          <th class="px-3 py-2">Эскертүү</th>
+          <th class="px-3 py-2 text-right">Аракет</th>
+        </tr>
+      </thead>
+      <tbody>
+        <template x-for="l in lessons" :key="l.id">
+          <tr class="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
+              @click="openDetail(l.id)">
+            <td class="px-3 py-2 text-slate-700" x-text="formatDateOnly(l.started_at)"></td>
+            <td class="px-3 py-2 font-medium text-slate-800" x-text="l.subject_name"></td>
+            <td class="px-3 py-2">
+              <span class="inline-block px-2 py-0.5 rounded bg-blue-100 text-blue-700 text-xs font-medium"
+                    x-text="l.class_name"></span>
+            </td>
+            <td class="px-3 py-2 text-slate-600" x-text="formatTime(l.started_at)"></td>
+            <td class="px-3 py-2 text-slate-600" x-text="formatDuration(l.duration_seconds)"></td>
+            <td class="px-3 py-2">
+              <span x-text="l.students_count"></span>
+              <span class="text-slate-400" x-text="' / ' + l.students_in_class"></span>
+            </td>
+            <td class="px-3 py-2">
+              <span x-show="l.alerts_count > 0"
+                    class="inline-block px-2 py-0.5 rounded bg-red-100 text-red-700 text-xs font-medium"
+                    x-text="l.alerts_count"></span>
+              <span x-show="l.alerts_count === 0" class="text-slate-400 text-xs">—</span>
+            </td>
+            <td class="px-3 py-2 text-right">
+              <a :href="'/api/lessons/' + l.id + '/pdf'" target="_blank" @click.stop=""
+                 class="inline-block bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium px-3 py-1 rounded">
+                📄 PDF
+              </a>
+            </td>
+          </tr>
+        </template>
+        <template x-if="lessons.length === 0">
+          <tr><td colspan="8" class="px-3 py-12 text-center text-slate-400">
+            Сабактар табылган жок. Чыпканы өзгөртүп көрүңүз.
+          </td></tr>
+        </template>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Detail modal -->
+<div x-show="detail" x-cloak
+     class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+     @click.self="detail = null">
+  <div class="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto"
+       x-show="detail" x-transition>
+    <template x-if="detail">
+      <div>
+        <div class="p-5 border-b border-slate-200 flex items-center justify-between sticky top-0 bg-white">
+          <div>
+            <h2 class="text-xl font-bold text-slate-800">
+              <span x-text="detail.subject_name"></span> · <span x-text="detail.class_name"></span>
+            </h2>
+            <p class="text-sm text-slate-500 mt-1">
+              <span x-text="formatFull(detail.started_at)"></span>
+              <span x-show="detail.ended_at"> — <span x-text="formatTime(detail.ended_at)"></span></span>
+              <span class="ml-2 text-slate-400">(<span x-text="formatDuration(detail.duration_seconds)"></span>)</span>
+            </p>
+          </div>
+          <div class="flex gap-2">
+            <a :href="'/api/lessons/' + detail.id + '/pdf'" target="_blank"
+               class="bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium px-4 py-2 rounded-lg">
+              📄 PDF жүктөө
+            </a>
+            <button @click="detail = null"
+                    class="text-slate-500 hover:text-slate-800 text-2xl px-2">✕</button>
+          </div>
+        </div>
+
+        <div class="p-5 space-y-5">
+          <!-- Attendees -->
+          <div>
+            <h3 class="font-bold text-slate-800 mb-2">
+              👥 Катышкандар (<span x-text="detail.attendees.length"></span> / <span x-text="detail.students_in_class"></span>)
+            </h3>
+            <template x-if="detail.attendees.length > 0">
+              <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
+                <template x-for="a in detail.attendees" :key="a.student_id">
+                  <div class="flex items-center gap-2 bg-slate-50 rounded-lg p-2">
+                    <template x-if="a.photo_url">
+                      <img :src="a.photo_url" class="w-10 h-10 rounded-full object-cover">
+                    </template>
+                    <template x-if="!a.photo_url">
+                      <div class="w-10 h-10 rounded-full bg-slate-300 flex items-center justify-center text-white">👤</div>
+                    </template>
+                    <div class="flex-1 min-w-0">
+                      <div class="text-sm font-medium text-slate-800 truncate" x-text="a.student_name"></div>
+                      <div class="text-xs text-slate-500" x-text="formatTime(a.entered_at)"></div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </template>
+            <template x-if="detail.attendees.length === 0">
+              <p class="text-slate-400 text-sm">Маалымат жок</p>
+            </template>
+          </div>
+
+          <!-- Emotions -->
+          <div>
+            <h3 class="font-bold text-slate-800 mb-2">😊 Эмоциялар</h3>
+            <template x-if="Object.keys(detail.emotions).length > 0">
+              <div class="flex flex-wrap gap-2">
+                <template x-for="(cnt, emo) in detail.emotions" :key="emo">
+                  <div class="px-3 py-1.5 rounded-lg text-sm font-medium"
+                       :class="emotionColor(emo)">
+                    <span x-text="emotionLabel(emo)"></span>
+                    <span class="ml-1 font-bold" x-text="cnt"></span>
+                  </div>
+                </template>
+              </div>
+            </template>
+            <template x-if="Object.keys(detail.emotions).length === 0">
+              <p class="text-slate-400 text-sm">Маалымат жок</p>
+            </template>
+          </div>
+
+          <!-- Alerts -->
+          <div>
+            <h3 class="font-bold text-slate-800 mb-2">
+              ⚠️ Эскертүүлөр (<span x-text="detail.alerts.length"></span>)
+            </h3>
+            <template x-if="detail.alerts.length > 0">
+              <div class="space-y-2">
+                <template x-for="a in detail.alerts" :key="a.id">
+                  <div class="border border-slate-200 rounded-lg p-3 flex items-start gap-3">
+                    <div class="text-2xl" x-text="alertIcon(a.alert_type)"></div>
+                    <div class="flex-1">
+                      <div class="flex items-center gap-2 flex-wrap">
+                        <span class="font-medium text-slate-800" x-text="a.student_name || '—'"></span>
+                        <span class="text-xs text-slate-500" x-text="formatTime(a.created_at)"></span>
+                        <span class="text-xs px-2 py-0.5 rounded-full font-medium"
+                              :class="statusBadge(a.status)" x-text="statusLabel(a.status)"></span>
+                      </div>
+                      <p class="text-sm text-slate-700 mt-1" x-text="a.message"></p>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </template>
+            <template x-if="detail.alerts.length === 0">
+              <p class="text-slate-400 text-sm">Эскертүүлөр жок</p>
+            </template>
+          </div>
+        </div>
+      </div>
+    </template>
+  </div>
+</div>
+
+</div>
+
+<script>
+function historyPage() {
+return {
+  classes: [],
+  subjects: [],
+  lessons: [],
+  stats: {},
+  filterClassId: '',
+  filterSubjectId: '',
+  filterDateFrom: '',
+  filterDateTo: '',
+  detail: null,
+
+  EMO_LABEL: {
+    happy: '😊 Бактылуу', neutral: '😐 Калыс', surprise: '😲 Таң калуу',
+    sad: '😢 Кайгы', angry: '😠 Ачуу', fear: '😨 Коркуу',
+    disgust: '🤢 Жийиркенүү', contempt: '😒 Жек көрүү',
+  },
+  EMO_COLOR: {
+    happy: 'bg-emerald-100 text-emerald-700',
+    neutral: 'bg-slate-100 text-slate-700',
+    surprise: 'bg-amber-100 text-amber-700',
+    sad: 'bg-blue-100 text-blue-700',
+    angry: 'bg-red-100 text-red-700',
+    fear: 'bg-purple-100 text-purple-700',
+    disgust: 'bg-lime-100 text-lime-700',
+    contempt: 'bg-slate-200 text-slate-700',
+  },
+
+  async init() {
+    const [c, s] = await Promise.all([
+      fetch('/api/classes').then(r => r.json()),
+      fetch('/api/subjects').then(r => r.json()),
+    ]);
+    this.classes = c;
+    this.subjects = s;
+    await this.reload();
+  },
+
+  buildQS() {
+    const p = new URLSearchParams();
+    if (this.filterClassId) p.set('class_id', this.filterClassId);
+    if (this.filterSubjectId) p.set('subject_id', this.filterSubjectId);
+    if (this.filterDateFrom) p.set('date_from', this.filterDateFrom);
+    if (this.filterDateTo) p.set('date_to', this.filterDateTo);
+    return p.toString();
+  },
+
+  async reload() {
+    const qs = this.buildQS();
+    const [lessons, stats] = await Promise.all([
+      fetch('/api/history/lessons' + (qs ? '?' + qs : '')).then(r => r.json()),
+      fetch('/api/history/stats' + (qs ? '?' + qs : '')).then(r => r.json()),
+    ]);
+    this.lessons = lessons;
+    this.stats = stats;
+  },
+
+  quickRange(days) {
+    const now = new Date();
+    const fmt = (d) => d.toISOString().slice(0, 10);
+    if (days === 0) {
+      this.filterDateFrom = fmt(now);
+      this.filterDateTo = fmt(now);
+    } else {
+      const from = new Date(now);
+      from.setDate(from.getDate() - days);
+      this.filterDateFrom = fmt(from);
+      this.filterDateTo = fmt(now);
+    }
+    this.reload();
+  },
+
+  clearFilters() {
+    this.filterClassId = '';
+    this.filterSubjectId = '';
+    this.filterDateFrom = '';
+    this.filterDateTo = '';
+    this.reload();
+  },
+
+  async openDetail(lessonId) {
+    const r = await fetch('/api/lessons/' + lessonId + '/detail');
+    if (r.ok) this.detail = await r.json();
+  },
+
+  emotionLabel(e) { return this.EMO_LABEL[e] || e; },
+  emotionColor(e) { return this.EMO_COLOR[e] || 'bg-slate-100 text-slate-700'; },
+
+  alertIcon(t) {
+    const m = { negative_emotion: '😟', student_left: '🚪', unknown_face: '❓' };
+    return m[t] || '⚠️';
+  },
+
+  statusLabel(s) {
+    return s === 'new' ? '🔴 Жаңы' : s === 'seen' ? '🟡 Көрүлдү' : s === 'resolved' ? '🟢 Чечилди' : s;
+  },
+
+  statusBadge(s) {
+    return s === 'new' ? 'bg-red-100 text-red-700'
+      : s === 'seen' ? 'bg-amber-100 text-amber-700'
+      : 'bg-emerald-100 text-emerald-700';
+  },
+
+  formatDateOnly(iso) {
+    if (!iso) return '—';
+    try { return new Date(iso).toLocaleDateString('ru-RU'); } catch (e) { return iso; }
+  },
+
+  formatTime(iso) {
+    if (!iso) return '—';
+    try { return new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }); } catch (e) { return iso; }
+  },
+
+  formatFull(iso) {
+    if (!iso) return '—';
+    try {
+      const d = new Date(iso);
+      return d.toLocaleDateString('ru-RU') + ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    } catch (e) { return iso; }
+  },
+
+  formatDuration(sec) {
+    if (!sec || sec < 0) return '—';
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    if (m === 0) return s + ' сек.';
+    return m + ' мүн. ' + s + ' сек.';
+  },
+};
+}
+</script>
+{% endblock %}
