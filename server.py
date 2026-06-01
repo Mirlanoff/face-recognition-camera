@@ -8,6 +8,7 @@ Stage 5 additions:
 - Schedule CRUD (/api/schedule) + background scheduler thread that
   auto-starts/auto-stops lessons.
 - Existing endpoints now require authentication.
+- Auto-launch view_camera.py subprocess on lesson start (Windows console).
 
 Roles:
   admin    -> everything
@@ -17,8 +18,10 @@ Roles:
 
 import os
 import io
+import sys
 import asyncio
 import time
+import subprocess
 import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -61,6 +64,51 @@ main_loop = None
 connected_sockets = set()
 
 
+# ===== View camera subprocess registry =====
+# lesson_id -> subprocess.Popen
+_viewer_processes = {}
+
+
+def _launch_viewer(lesson_id):
+  """Launch view_camera.py in its own console window (Windows) or detached (Unix)."""
+  try:
+    script = str(Path(__file__).parent / "view_camera.py")
+    if not Path(script).exists():
+      print("[server] view_camera.py not found - skipping viewer launch")
+      return None
+    creationflags = 0
+    if sys.platform == "win32":
+      creationflags = subprocess.CREATE_NEW_CONSOLE
+    proc = subprocess.Popen(
+      [sys.executable, script],
+      cwd=str(Path(__file__).parent),
+      creationflags=creationflags,
+    )
+    _viewer_processes[lesson_id] = proc
+    print("[server] viewer launched for lesson " + str(lesson_id) + " pid=" + str(proc.pid))
+    return proc
+  except Exception as e:
+    print("[server] failed to launch viewer: " + str(e))
+    traceback.print_exc()
+    return None
+
+
+def _kill_viewer(lesson_id):
+  proc = _viewer_processes.pop(lesson_id, None)
+  if proc is None:
+    return
+  try:
+    if proc.poll() is None:
+      proc.terminate()
+      try:
+        proc.wait(timeout=3)
+      except Exception:
+        proc.kill()
+    print("[server] viewer killed for lesson " + str(lesson_id))
+  except Exception as e:
+    print("[server] viewer kill error: " + str(e))
+
+
 @app.on_event("startup")
 async def on_startup():
   global event_queue, main_loop
@@ -75,6 +123,9 @@ async def on_startup():
 @app.on_event("shutdown")
 async def on_shutdown():
   auto_scheduler.stop_scheduler()
+  # Kill all viewer subprocesses
+  for lid in list(_viewer_processes.keys()):
+    _kill_viewer(lid)
 
 
 async def _broadcast_loop():
@@ -372,6 +423,8 @@ def active_lessons(
   lessons = q.order_by(Lesson.started_at.desc()).all()
   out = []
   for l in lessons:
+    viewer_proc = _viewer_processes.get(l.id)
+    viewer_running = viewer_proc is not None and viewer_proc.poll() is None
     out.append({
         "id": l.id,
         "subject_name": l.subject.name if l.subject else "",
@@ -381,6 +434,7 @@ def active_lessons(
         "students_seen": db.query(Attendance).filter(Attendance.lesson_id == l.id).count(),
         "camera_id": l.camera_id,
         "worker_running": recognizer_worker.is_worker_running(l.id),
+        "viewer_running": viewer_running,
         "auto_started": l.auto_started,
     })
   return out
@@ -451,6 +505,7 @@ async def start_lesson(
   db.refresh(lesson)
 
   recognizer_worker.start_worker(lesson.id, event_queue, main_loop)
+  _launch_viewer(lesson.id)
 
   return {
     "id": lesson.id,
@@ -474,6 +529,7 @@ def stop_lesson(
   if user.role == "pedagog" and lesson.class_id != user.class_id:
     raise HTTPException(status_code=403, detail="Сиздин классыңыз эмес")
   recognizer_worker.stop_worker(lesson_id)
+  _kill_viewer(lesson_id)
   if lesson.is_active:
     lesson.is_active = False
     lesson.ended_at = datetime.utcnow()
