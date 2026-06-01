@@ -1,0 +1,391 @@
+{% extends "base.html" %}
+{% block title %}Башкаруу · Мектеп таануу системасы{% endblock %}
+
+{% block content %}
+<div x-data="adminPage()" x-init="init()">
+
+<!-- Tabs -->
+<div class="flex space-x-2 mb-6 border-b border-slate-200">
+    <button @click="tab = 'users'"
+            :class="tab === 'users' ? 'border-b-2 border-blue-600 text-blue-700 font-semibold' : 'text-slate-500'"
+            class="px-4 py-2 -mb-px">
+        👥 Колдонуучулар
+    </button>
+    <button @click="tab = 'schedule'"
+            :class="tab === 'schedule' ? 'border-b-2 border-blue-600 text-blue-700 font-semibold' : 'text-slate-500'"
+            class="px-4 py-2 -mb-px">
+        📅 Жадыбал
+    </button>
+</div>
+
+<!-- ============ USERS TAB ============ -->
+<div x-show="tab === 'users'">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-xl font-bold text-slate-800">Колдонуучулар</h2>
+        <button @click="openUserModal()"
+                class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium">
+            + Жаңы колдонуучу
+        </button>
+    </div>
+
+    <div class="bg-white rounded-xl shadow overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-slate-100 text-slate-700">
+                <tr>
+                    <th class="px-4 py-3 text-left">Логин</th>
+                    <th class="px-4 py-3 text-left">Аты-жөнү</th>
+                    <th class="px-4 py-3 text-left">Ролу</th>
+                    <th class="px-4 py-3 text-left">Класс</th>
+                    <th class="px-4 py-3 text-right">Аракеттер</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-200">
+                <template x-for="u in users" :key="u.id">
+                    <tr>
+                        <td class="px-4 py-2 font-mono" x-text="u.username"></td>
+                        <td class="px-4 py-2" x-text="u.full_name"></td>
+                        <td class="px-4 py-2">
+                            <span class="inline-block px-2 py-0.5 rounded-full text-white text-xs"
+                                  :class="u.role === 'admin' ? 'bg-red-500' : (u.role === 'director' ? 'bg-purple-500' : 'bg-blue-500')"
+                                  x-text="roleLabel(u.role)"></span>
+                        </td>
+                        <td class="px-4 py-2 text-slate-600" x-text="u.class_name || '—'"></td>
+                        <td class="px-4 py-2 text-right space-x-2">
+                            <button @click="openUserModal(u)" class="text-blue-600 hover:underline text-xs">Оңдоо</button>
+                            <button @click="deleteUser(u)" class="text-red-600 hover:underline text-xs">Өчүрүү</button>
+                        </td>
+                    </tr>
+                </template>
+                <tr x-show="users.length === 0">
+                    <td colspan="5" class="px-4 py-6 text-center text-slate-400">Колдонуучулар жок</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ============ SCHEDULE TAB ============ -->
+<div x-show="tab === 'schedule'">
+    <div class="flex items-center justify-between mb-4">
+        <div>
+            <h2 class="text-xl font-bold text-slate-800">Жадыбал</h2>
+            <p class="text-xs text-slate-500">Сабактар жадыбал боюнча автоматтык түрдө башталат жана аяктайт.</p>
+        </div>
+        <button @click="openScheduleModal()"
+                class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium">
+            + Жаңы сабак
+        </button>
+    </div>
+
+    <div class="bg-white rounded-xl shadow overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-slate-100 text-slate-700">
+                <tr>
+                    <th class="px-4 py-3 text-left">Күн</th>
+                    <th class="px-4 py-3 text-left">Убакыт</th>
+                    <th class="px-4 py-3 text-left">Класс</th>
+                    <th class="px-4 py-3 text-left">Предмет</th>
+                    <th class="px-4 py-3 text-center">Статус</th>
+                    <th class="px-4 py-3 text-right">Аракеттер</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-200">
+                <template x-for="s in schedule" :key="s.id">
+                    <tr>
+                        <td class="px-4 py-2 font-medium" x-text="s.day_label"></td>
+                        <td class="px-4 py-2 font-mono" x-text="s.start_time + ' — ' + s.end_time"></td>
+                        <td class="px-4 py-2" x-text="s.class_name"></td>
+                        <td class="px-4 py-2" x-text="s.subject_name"></td>
+                        <td class="px-4 py-2 text-center">
+                            <button @click="toggleScheduleEnabled(s)"
+                                    class="inline-block px-2 py-0.5 rounded-full text-white text-xs"
+                                    :class="s.enabled ? 'bg-green-500' : 'bg-slate-400'"
+                                    x-text="s.enabled ? 'Активдүү' : 'Өчүк'"></button>
+                        </td>
+                        <td class="px-4 py-2 text-right space-x-2">
+                            <button @click="openScheduleModal(s)" class="text-blue-600 hover:underline text-xs">Оңдоо</button>
+                            <button @click="deleteSchedule(s)" class="text-red-600 hover:underline text-xs">Өчүрүү</button>
+                        </td>
+                    </tr>
+                </template>
+                <tr x-show="schedule.length === 0">
+                    <td colspan="6" class="px-4 py-6 text-center text-slate-400">Жадыбал бош</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ============ USER MODAL ============ -->
+<div x-show="userModal.open" x-transition
+     class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center px-4"
+     @click.self="userModal.open = false">
+    <div class="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+        <h3 class="text-lg font-bold mb-4" x-text="userModal.id ? 'Колдонуучуну оңдоо' : 'Жаңы колдонуучу'"></h3>
+        <form @submit.prevent="saveUser()" class="space-y-3">
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Логин</label>
+                <input type="text" x-model="userModal.username" required :disabled="userModal.id"
+                       class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm disabled:bg-slate-100" />
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Аты-жөнү</label>
+                <input type="text" x-model="userModal.full_name" required
+                       class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" />
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">
+                    Пароль <span x-show="userModal.id" class="text-slate-400">(өзгөртүү үчүн жазыңыз)</span>
+                </label>
+                <input type="text" x-model="userModal.password"
+                       :required="!userModal.id"
+                       class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" />
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Ролу</label>
+                <select x-model="userModal.role"
+                        class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                    <option value="admin">Администратор</option>
+                    <option value="director">Директор</option>
+                    <option value="pedagog">Мугалим</option>
+                </select>
+            </div>
+            <div x-show="userModal.role === 'pedagog'">
+                <label class="block text-xs font-medium text-slate-600 mb-1">Класс</label>
+                <select x-model.number="userModal.class_id"
+                        class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                    <option :value="null">— тандаңыз —</option>
+                    <template x-for="c in classes" :key="c.id">
+                        <option :value="c.id" x-text="c.name"></option>
+                    </template>
+                </select>
+            </div>
+            <div x-show="userModal.error" class="text-red-600 text-xs" x-text="userModal.error"></div>
+            <div class="flex justify-end space-x-2 pt-2">
+                <button type="button" @click="userModal.open = false"
+                        class="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg">Жокко чыгаруу</button>
+                <button type="submit"
+                        class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg">Сактоо</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- ============ SCHEDULE MODAL ============ -->
+<div x-show="scheduleModal.open" x-transition
+     class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center px-4"
+     @click.self="scheduleModal.open = false">
+    <div class="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+        <h3 class="text-lg font-bold mb-4" x-text="scheduleModal.id ? 'Жадыбалды оңдоо' : 'Жаңы сабак'"></h3>
+        <form @submit.prevent="saveSchedule()" class="space-y-3">
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Класс</label>
+                <select x-model.number="scheduleModal.class_id" required
+                        class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                    <option :value="null">— тандаңыз —</option>
+                    <template x-for="c in classes" :key="c.id">
+                        <option :value="c.id" x-text="c.name"></option>
+                    </template>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Предмет</label>
+                <select x-model.number="scheduleModal.subject_id" required
+                        class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                    <option :value="null">— тандаңыз —</option>
+                    <template x-for="s in subjects" :key="s.id">
+                        <option :value="s.id" x-text="s.name"></option>
+                    </template>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-slate-600 mb-1">Күн</label>
+                <select x-model.number="scheduleModal.day_of_week" required
+                        class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                    <option value="0">Дүйшөмбү</option>
+                    <option value="1">Шейшемби</option>
+                    <option value="2">Шаршемби</option>
+                    <option value="3">Бейшемби</option>
+                    <option value="4">Жума</option>
+                    <option value="5">Ишемби</option>
+                    <option value="6">Жекшемби</option>
+                </select>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Башталат</label>
+                    <input type="time" x-model="scheduleModal.start_time" required
+                           class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" />
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">Аяктайт</label>
+                    <input type="time" x-model="scheduleModal.end_time" required
+                           class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" />
+                </div>
+            </div>
+            <label class="flex items-center space-x-2 text-sm">
+                <input type="checkbox" x-model="scheduleModal.enabled" class="rounded" />
+                <span>Активдүү</span>
+            </label>
+            <div x-show="scheduleModal.error" class="text-red-600 text-xs" x-text="scheduleModal.error"></div>
+            <div class="flex justify-end space-x-2 pt-2">
+                <button type="button" @click="scheduleModal.open = false"
+                        class="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg">Жокко чыгаруу</button>
+                <button type="submit"
+                        class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg">Сактоо</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+</div>
+
+<script>
+function adminPage() {
+return {
+    tab: 'users',
+    users: [], classes: [], subjects: [], schedule: [],
+    userModal: { open: false, id: null, username: '', full_name: '', password: '', role: 'pedagog', class_id: null, error: '' },
+    scheduleModal: { open: false, id: null, class_id: null, subject_id: null, day_of_week: 0, start_time: '08:00', end_time: '08:45', enabled: true, error: '' },
+
+    async init() {
+        await Promise.all([this.loadUsers(), this.loadClasses(), this.loadSubjects(), this.loadSchedule()]);
+    },
+
+    roleLabel(r) {
+        return ({ admin: 'Администратор', director: 'Директор', pedagog: 'Мугалим' }[r] || r);
+    },
+
+    async loadUsers() {
+        const r = await fetch('/api/users');
+        if (r.ok) this.users = await r.json();
+    },
+    async loadClasses() {
+        const r = await fetch('/api/classes');
+        if (r.ok) this.classes = await r.json();
+    },
+    async loadSubjects() {
+        const r = await fetch('/api/subjects');
+        if (r.ok) this.subjects = await r.json();
+    },
+    async loadSchedule() {
+        const r = await fetch('/api/schedule');
+        if (r.ok) this.schedule = await r.json();
+    },
+
+    // USERS
+    openUserModal(u) {
+        this.userModal.error = '';
+        if (u) {
+            this.userModal = { open: true, id: u.id, username: u.username, full_name: u.full_name, password: '', role: u.role, class_id: u.class_id, error: '' };
+        } else {
+            this.userModal = { open: true, id: null, username: '', full_name: '', password: '', role: 'pedagog', class_id: null, error: '' };
+        }
+    },
+    async saveUser() {
+        this.userModal.error = '';
+        const body = {
+            username: this.userModal.username,
+            full_name: this.userModal.full_name,
+            role: this.userModal.role,
+            class_id: this.userModal.role === 'pedagog' ? this.userModal.class_id : null,
+        };
+        if (this.userModal.password) body.password = this.userModal.password;
+        try {
+            let r;
+            if (this.userModal.id) {
+                r = await fetch('/api/users/' + this.userModal.id, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+            } else {
+                r = await fetch('/api/users', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+            }
+            if (!r.ok) {
+                const d = await r.json().catch(() => ({}));
+                this.userModal.error = d.detail || 'Ката';
+                return;
+            }
+            this.userModal.open = false;
+            await this.loadUsers();
+        } catch (e) {
+            this.userModal.error = 'Тармактык ката';
+        }
+    },
+    async deleteUser(u) {
+        if (!confirm('"' + u.username + '" колдонуучусун өчүрөсүзбү?')) return;
+        const r = await fetch('/api/users/' + u.id, { method: 'DELETE' });
+        if (r.ok) await this.loadUsers();
+        else {
+            const d = await r.json().catch(() => ({}));
+            alert(d.detail || 'Ката');
+        }
+    },
+
+    // SCHEDULE
+    openScheduleModal(s) {
+        this.scheduleModal.error = '';
+        if (s) {
+            this.scheduleModal = { open: true, id: s.id, class_id: s.class_id, subject_id: s.subject_id, day_of_week: s.day_of_week, start_time: s.start_time, end_time: s.end_time, enabled: s.enabled, error: '' };
+        } else {
+            this.scheduleModal = { open: true, id: null, class_id: null, subject_id: null, day_of_week: 0, start_time: '08:00', end_time: '08:45', enabled: true, error: '' };
+        }
+    },
+    async saveSchedule() {
+        this.scheduleModal.error = '';
+        const body = {
+            class_id: this.scheduleModal.class_id,
+            subject_id: this.scheduleModal.subject_id,
+            day_of_week: this.scheduleModal.day_of_week,
+            start_time: this.scheduleModal.start_time,
+            end_time: this.scheduleModal.end_time,
+            enabled: this.scheduleModal.enabled,
+        };
+        try {
+            let r;
+            if (this.scheduleModal.id) {
+                r = await fetch('/api/schedule/' + this.scheduleModal.id, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+            } else {
+                r = await fetch('/api/schedule', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+            }
+            if (!r.ok) {
+                const d = await r.json().catch(() => ({}));
+                this.scheduleModal.error = d.detail || 'Ката';
+                return;
+            }
+            this.scheduleModal.open = false;
+            await this.loadSchedule();
+        } catch (e) {
+            this.scheduleModal.error = 'Тармактык ката';
+        }
+    },
+    async toggleScheduleEnabled(s) {
+        const r = await fetch('/api/schedule/' + s.id, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: !s.enabled }),
+        });
+        if (r.ok) await this.loadSchedule();
+    },
+    async deleteSchedule(s) {
+        if (!confirm('Бул жадыбалды өчүрөсүзбү?')) return;
+        const r = await fetch('/api/schedule/' + s.id, { method: 'DELETE' });
+        if (r.ok) await this.loadSchedule();
+    },
+};
+}
+</script>
+{% endblock %}
