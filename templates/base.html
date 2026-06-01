@@ -1,69 +1,185 @@
 <!DOCTYPE html>
-<html lang="ky">
+<html lang="ky" :class="darkMode ? 'dark' : ''" x-data="appShell()" x-init="init()">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>{% block title %}Мектеп таануу системасы{% endblock %}</title>
+<script>
+// Apply dark mode BEFORE Tailwind loads (avoids flash)
+if (localStorage.getItem('darkMode') === 'true') {
+    document.documentElement.classList.add('dark');
+}
+tailwind = { config: { darkMode: 'class' } };
+</script>
 <script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = { darkMode: 'class' };
+</script>
 <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
-    body { font-family: 'Segoe UI', system-ui, sans-serif; }
-    .tab-active { background-color: #1e40af; color: white; }
-    .tab-inactive { background-color: #f1f5f9; color: #334155; }
-    .tab-inactive:hover { background-color: #e2e8f0; }
+body { font-family: 'Segoe UI', system-ui, sans-serif; }
+.tab-active { background-color: #1e40af; color: white; }
+.tab-inactive { background-color: #f1f5f9; color: #334155; }
+.tab-inactive:hover { background-color: #e2e8f0; }
+
+/* Dark mode */
+html.dark body { background-color: #0f172a; color: #e2e8f0; }
+html.dark .bg-white { background-color: #1e293b !important; color: #e2e8f0; }
+html.dark .bg-slate-100 { background-color: #0f172a !important; }
+html.dark .bg-slate-50 { background-color: #1e293b !important; }
+html.dark .bg-gray-50 { background-color: #1e293b !important; }
+html.dark .text-slate-800 { color: #e2e8f0 !important; }
+html.dark .text-slate-700 { color: #cbd5e1 !important; }
+html.dark .text-slate-600 { color: #94a3b8 !important; }
+html.dark .text-slate-500 { color: #64748b !important; }
+html.dark .text-gray-700 { color: #cbd5e1 !important; }
+html.dark .text-gray-600 { color: #94a3b8 !important; }
+html.dark .border-slate-200 { border-color: #334155 !important; }
+html.dark .border-slate-300 { border-color: #475569 !important; }
+html.dark .border-gray-200 { border-color: #334155 !important; }
+html.dark .tab-inactive { background-color: #334155; color: #cbd5e1; }
+html.dark .tab-inactive:hover { background-color: #475569; }
+html.dark .shadow-lg, html.dark .shadow-md, html.dark .shadow { box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+html.dark input, html.dark select, html.dark textarea {
+    background-color: #1e293b !important;
+    color: #e2e8f0 !important;
+    border-color: #475569 !important;
+}
+html.dark table tbody tr:hover { background-color: #334155 !important; }
+html.dark .divide-slate-200 > * + * { border-color: #334155 !important; }
 </style>
 </head>
 <body class="bg-slate-100 min-h-screen">
 
 <!-- Header -->
 <header class="bg-gradient-to-r from-blue-700 to-indigo-700 text-white shadow-lg">
-    <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-        <div class="flex items-center space-x-3">
-            <div class="text-3xl">🎓</div>
-            <div>
-                <h1 class="text-xl font-bold">Мектеп таануу системасы</h1>
-                <p class="text-blue-100 text-xs">Жасалма интеллект менен иштеген окуучуларды таануу</p>
-            </div>
-        </div>
-        <div class="text-sm text-blue-100">
-            <span x-data="{ time: '' }"
-                  x-init="setInterval(() => { time = new Date().toLocaleString('ru-RU') }, 1000)"
-                  x-text="time"></span>
+<div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+    <div class="flex items-center space-x-3">
+        <div class="text-3xl">🎓</div>
+        <div>
+            <h1 class="text-xl font-bold">Мектеп таануу системасы</h1>
+            <p class="text-blue-100 text-xs">Жасалма интеллект менен иштеген окуучуларды таануу</p>
         </div>
     </div>
+    <div class="flex items-center space-x-4">
+        <span class="text-sm text-blue-100"
+              x-data="{ time: '' }"
+              x-init="setInterval(() => { time = new Date().toLocaleString('ru-RU') }, 1000)"
+              x-text="time"></span>
 
-    <!-- Tabs -->
-    <nav class="max-w-7xl mx-auto px-6 pb-0">
-        <div class="flex space-x-2">
-            <a href="/" class="px-5 py-2 rounded-t-lg font-medium text-sm
-                {% if active_tab == 'overview' %}tab-active{% else %}tab-inactive{% endif %}">
-                📊 Көрүнүш
-            </a>
-            <a href="/analytics" class="px-5 py-2 rounded-t-lg font-medium text-sm
-                {% if active_tab == 'analytics' %}tab-active{% else %}tab-inactive{% endif %}">
-                📈 Аналитика
-            </a>
-            <a href="/alerts" class="px-5 py-2 rounded-t-lg font-medium text-sm
-                {% if active_tab == 'alerts' %}tab-active{% else %}tab-inactive{% endif %}">
-                🚨 Эскертүүлөр
-            </a>
-            <a href="/history" class="px-5 py-2 rounded-t-lg font-medium text-sm
-                {% if active_tab == 'history' %}tab-active{% else %}tab-inactive{% endif %}">
-                📚 Тарых
-            </a>
+        <!-- Dark mode toggle -->
+        <button @click="toggleDarkMode()"
+                class="p-2 rounded-lg bg-white/10 hover:bg-white/20 transition"
+                :title="darkMode ? 'Жарык режим' : 'Караңгы режим'">
+            <span x-show="!darkMode">🌙</span>
+            <span x-show="darkMode">☀️</span>
+        </button>
+
+        <!-- User menu -->
+        <div class="relative" x-data="{ open: false }" @click.outside="open = false">
+            <button @click="open = !open"
+                    class="flex items-center space-x-2 bg-white/10 hover:bg-white/20 px-3 py-2 rounded-lg transition">
+                <span class="text-lg">👤</span>
+                <div class="text-left">
+                    <div class="text-sm font-medium" x-text="user.full_name || '...'"></div>
+                    <div class="text-xs text-blue-100" x-text="roleLabel()"></div>
+                </div>
+            </button>
+            <div x-show="open" x-transition
+                 class="absolute right-0 mt-2 w-56 bg-white text-slate-800 rounded-lg shadow-xl z-50 overflow-hidden">
+                <div class="px-4 py-3 border-b border-slate-200">
+                    <div class="font-semibold text-sm" x-text="user.full_name"></div>
+                    <div class="text-xs text-slate-500" x-text="user.username"></div>
+                    <div class="text-xs mt-1">
+                        <span class="inline-block px-2 py-0.5 rounded-full text-white text-xs"
+                              :class="user.role === 'admin' ? 'bg-red-500' : (user.role === 'director' ? 'bg-purple-500' : 'bg-blue-500')"
+                              x-text="roleLabel()"></span>
+                    </div>
+                </div>
+                <button @click="logout()"
+                        class="w-full text-left px-4 py-2 hover:bg-slate-100 text-sm flex items-center space-x-2">
+                    <span>🚪</span><span>Чыгуу</span>
+                </button>
+            </div>
         </div>
-    </nav>
+    </div>
+</div>
+
+<!-- Tabs -->
+<nav class="max-w-7xl mx-auto px-6 pb-0">
+    <div class="flex space-x-2">
+        <a href="/" class="px-5 py-2 rounded-t-lg font-medium text-sm
+            {% if active_tab == 'overview' %}tab-active{% else %}tab-inactive{% endif %}">
+            📊 Көрүнүш
+        </a>
+        <a href="/analytics" class="px-5 py-2 rounded-t-lg font-medium text-sm
+            {% if active_tab == 'analytics' %}tab-active{% else %}tab-inactive{% endif %}">
+            📈 Аналитика
+        </a>
+        <a href="/alerts" class="px-5 py-2 rounded-t-lg font-medium text-sm
+            {% if active_tab == 'alerts' %}tab-active{% else %}tab-inactive{% endif %}">
+            🚨 Эскертүүлөр
+        </a>
+        <a href="/history" class="px-5 py-2 rounded-t-lg font-medium text-sm
+            {% if active_tab == 'history' %}tab-active{% else %}tab-inactive{% endif %}">
+            📚 Тарых
+        </a>
+        <template x-if="user.role === 'admin'">
+            <a href="/admin" class="px-5 py-2 rounded-t-lg font-medium text-sm
+                {% if active_tab == 'admin' %}tab-active{% else %}tab-inactive{% endif %}">
+                ⚙️ Башкаруу
+            </a>
+        </template>
+    </div>
+</nav>
 </header>
 
 <!-- Content -->
 <main class="max-w-7xl mx-auto px-6 py-8">
-    {% block content %}{% endblock %}
+{% block content %}{% endblock %}
 </main>
 
 <footer class="text-center text-slate-500 text-xs py-6">
-    Диплом долбоору &middot; InsightFace + FastAPI &middot; 2026
+Диплом долбоору &middot; InsightFace + FastAPI &middot; 2026
 </footer>
+
+<script>
+function appShell() {
+    return {
+        user: { username: '', full_name: '', role: '', class_id: null },
+        darkMode: localStorage.getItem('darkMode') === 'true',
+        async init() {
+            try {
+                const r = await fetch('/api/me');
+                if (r.ok) {
+                    this.user = await r.json();
+                } else if (r.status === 401) {
+                    window.location.href = '/login';
+                }
+            } catch (e) {
+                console.error('me failed', e);
+            }
+        },
+        toggleDarkMode() {
+            this.darkMode = !this.darkMode;
+            localStorage.setItem('darkMode', this.darkMode);
+            document.documentElement.classList.toggle('dark', this.darkMode);
+        },
+        roleLabel() {
+            return ({
+                admin: 'Администратор',
+                director: 'Директор',
+                pedagog: 'Мугалим',
+            }[this.user.role] || '');
+        },
+        async logout() {
+            await fetch('/api/logout', { method: 'POST' });
+            window.location.href = '/login';
+        },
+    };
+}
+</script>
 
 </body>
 </html>
