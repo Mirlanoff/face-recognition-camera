@@ -1,278 +1,309 @@
 {% extends "base.html" %}
 
-{% block title %}Көрүнүш &middot; Мектеп таануу{% endblock %}
+{% block title %}Көздөө &mdash; Мектеп таануу{% endblock %}
 
 {% block content %}
 <div x-data="overviewApp()" x-init="init()">
 
 <!-- Top stats -->
 <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-    <div class="bg-white rounded-xl shadow p-5">
-        <div class="text-slate-500 text-xs uppercase tracking-wider">Бардык окуучулар</div>
-        <div class="text-3xl font-bold text-slate-800 mt-2" x-text="stats.total_students || 0"></div>
-    </div>
-    <div class="bg-white rounded-xl shadow p-5">
-        <div class="text-slate-500 text-xs uppercase tracking-wider">Класстар</div>
-        <div class="text-3xl font-bold text-slate-800 mt-2" x-text="stats.total_classes || 0"></div>
-    </div>
-    <div class="bg-white rounded-xl shadow p-5 ring-2 ring-green-400">
-        <div class="text-slate-500 text-xs uppercase tracking-wider">Активдүү сабактар</div>
-        <div class="text-3xl font-bold text-green-600 mt-2" x-text="stats.active_lessons || 0"></div>
-    </div>
-    <div class="bg-white rounded-xl shadow p-5">
-        <div class="text-slate-500 text-xs uppercase tracking-wider">Бүгүн сабак</div>
-        <div class="text-3xl font-bold text-slate-800 mt-2" x-text="stats.lessons_today || 0"></div>
-    </div>
+<div class="bg-white rounded-xl shadow p-5">
+    <div class="text-slate-500 text-xs uppercase tracking-wider">Бардык окуучулар</div>
+    <div class="text-3xl font-bold text-slate-800 mt-2" x-text="stats.total_students || 0"></div>
+</div>
+<div class="bg-white rounded-xl shadow p-5">
+    <div class="text-slate-500 text-xs uppercase tracking-wider">Класстары</div>
+    <div class="text-3xl font-bold text-slate-800 mt-2" x-text="stats.total_classes || 0"></div>
+</div>
+<div class="bg-white rounded-xl shadow p-5 ring-2 ring-green-400">
+    <div class="text-slate-500 text-xs uppercase tracking-wider">Активдүү сабактар</div>
+    <div class="text-3xl font-bold text-green-600 mt-2" x-text="stats.active_lessons || 0"></div>
+</div>
+<div class="bg-white rounded-xl shadow p-5">
+    <div class="text-slate-500 text-xs uppercase tracking-wider">Бүгүн сабак</div>
+    <div class="text-3xl font-bold text-slate-800 mt-2" x-text="stats.lessons_today || 0"></div>
+</div>
 </div>
 
 <div class="mb-4 text-xs flex items-center space-x-3">
-    <span class="px-2 py-1 rounded"
-          :class="wsStatus === 'connected' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'">
-        <span x-text="wsStatus === 'connected' ? '🟢 Сервер байланышы' : '🔴 Сервер байланышы жок'"></span>
-    </span>
+<span class="px-2 py-1 rounded"
+      :class="wsStatus === 'connected' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'">
+    <span x-text="wsStatus === 'connected' ? '🟢 Сервер байланышты' : '🔴 Сервер байланышты жок'"></span>
+</span>
+<span x-show="loadError" class="px-2 py-1 rounded bg-red-100 text-red-700" x-text="loadError"></span>
 </div>
 
 <!-- Active lessons + feed -->
 <section class="mb-10 grid grid-cols-1 lg:grid-cols-3 gap-6">
-    <div class="lg:col-span-2">
-        <div class="flex items-center justify-between mb-4">
-            <h2 class="text-xl font-semibold text-slate-800">🟢 Активдүү сабактар</h2>
-            <button @click="showStartLesson = true"
-                class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium shadow">
-                ➕ Сабак баштоо
-            </button>
+<div class="lg:col-span-2">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-xl font-semibold text-slate-800">🟢 Активдүү сабактар</h2>
+        <button @click="showStartLesson = true"
+            class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium shadow">
+            ➕ Сабак баштоо
+        </button>
+    </div>
+
+    <template x-if="activeLessons.length === 0">
+        <div class="bg-white rounded-xl shadow p-8 text-center text-slate-500">
+            Азыр активдүү сабак жок.
         </div>
+    </template>
 
-        <template x-if="activeLessons.length === 0">
-            <div class="bg-white rounded-xl shadow p-8 text-center text-slate-500">
-                Азыр активдүү сабак жок.
-            </div>
-        </template>
-
-        <div class="space-y-4">
-            <template x-for="lesson in activeLessons" :key="lesson.id">
-                <div class="bg-white rounded-xl shadow p-5 border-l-4 border-green-500">
-                    <div class="flex justify-between items-start mb-3">
-                        <div>
-                            <div class="text-xs text-slate-500" x-text="lesson.class_name"></div>
-                            <div class="text-lg font-semibold text-slate-800" x-text="lesson.subject_name"></div>
-                            <div class="mt-1 flex space-x-2 items-center">
-                                <span class="text-xs px-2 py-0.5 rounded"
-                                      :class="lesson.worker_running ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'">
-                                    <span x-text="lesson.worker_running ? '📹 Камера иштеп жатат' : '⏳ Камера күтүүдө'"></span>
-                                </span>
-                            </div>
+    <div class="space-y-4">
+        <template x-for="lesson in activeLessons" :key="lesson.id">
+            <div class="bg-white rounded-xl shadow p-5 border-l-4 border-green-500">
+                <div class="flex justify-between items-start mb-3">
+                    <div>
+                        <div class="text-xs text-slate-500" x-text="lesson.class_name"></div>
+                        <div class="text-lg font-semibold text-slate-800" x-text="lesson.subject_name"></div>
+                        <div class="mt-1 flex space-x-2 items-center flex-wrap gap-1">
+                            <span class="text-xs px-2 py-0.5 rounded"
+                                  :class="lesson.worker_running ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'">
+                                <span x-text="lesson.worker_running ? '🟩 Камера иштеп жатат' : '⏳ Камера күтүүдө'"></span>
+                            </span>
+                            <span class="text-xs px-2 py-0.5 rounded"
+                                  :class="lesson.viewer_running ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-500'">
+                                <span x-text="lesson.viewer_running ? '🖥️ Терезе ачык' : '🖥️ Терезе жабык'"></span>
+                            </span>
+                            <span x-show="lesson.auto_started" class="text-xs px-2 py-0.5 rounded bg-blue-100 text-blue-700">
+                                ⏰ Авто
+                            </span>
                         </div>
-                        <button @click="stopLesson(lesson.id)"
+                    </div>
+                    <button @click="stopLesson(lesson.id)"
                             class="text-red-600 hover:text-red-800 text-xs font-medium">
-                            Аяктоо
-                        </button>
+                        Аяктоо
+                    </button>
+                </div>
+                <div class="mt-2 text-sm text-slate-600 flex justify-between">
+                    <div>
+                        📆 <span x-text="lesson.students_seen"></span> / <span x-text="lesson.students_in_class"></span> окуучу
                     </div>
-                    <div class="mt-2 text-sm text-slate-600 flex justify-between">
-                        <div>
-                            👥 <span x-text="lesson.students_seen"></span> / <span x-text="lesson.students_in_class"></span> окуучу
-                        </div>
-                        <div class="text-slate-500 text-xs" x-text="'Башталган: ' + formatTime(lesson.started_at)"></div>
-                    </div>
+                    <div class="text-slate-500 text-xs" x-text="'Башталган: ' + formatTime(lesson.started_at)"></div>
+                </div>
 
-                    <div class="mt-4 border-t pt-3">
-                        <div class="text-xs font-medium text-slate-600 mb-2">Катышкан окуучулар:</div>
-                        <div class="flex flex-wrap gap-2">
-                            <template x-for="a in (attendeesByLesson[lesson.id] || [])" :key="a.student_id">
-                                <div class="flex items-center space-x-2 bg-green-50 border border-green-200 rounded-lg px-2 py-1">
-                                    <template x-if="a.photo_url">
-                                        <img :src="a.photo_url" class="w-6 h-6 rounded-full object-cover">
-                                    </template>
-                                    <div class="text-xs text-slate-700" x-text="a.student_name"></div>
-                                </div>
-                            </template>
-                            <template x-if="!attendeesByLesson[lesson.id] || attendeesByLesson[lesson.id].length === 0">
-                                <div class="text-xs text-slate-400">— азырынча эч ким таанылган жок —</div>
-                            </template>
-                        </div>
+                <div class="mt-4 border-t pt-3">
+                    <div class="text-xs font-medium text-slate-600 mb-2">Катышкан окуучулар:</div>
+                    <div class="flex flex-wrap gap-2">
+                        <template x-for="a in (attendeesByLesson[lesson.id] || [])" :key="a.student_id">
+                            <div class="flex items-center space-x-2 bg-green-50 border border-green-200 rounded-lg px-2 py-1">
+                                <template x-if="a.photo_url">
+                                    <img :src="a.photo_url" class="w-6 h-6 rounded-full object-cover">
+                                </template>
+                                <div class="text-xs text-slate-700" x-text="a.student_name"></div>
+                            </div>
+                        </template>
+                        <template x-if="!attendeesByLesson[lesson.id] || attendeesByLesson[lesson.id].length === 0">
+                            <div class="text-xs text-slate-400">— азырынча эч ким таанылган жок —</div>
+                        </template>
                     </div>
                 </div>
-            </template>
-        </div>
+            </div>
+        </template>
     </div>
+</div>
 
-    <div class="lg:col-span-1">
-        <h2 class="text-xl font-semibold text-slate-800 mb-4">📡 Жандуу окуялар</h2>
-        <div class="bg-white rounded-xl shadow p-4 h-96 overflow-y-auto">
-            <template x-if="feed.length === 0">
-                <div class="text-center text-slate-400 text-sm py-8">Окуялар жок</div>
+<div class="lg:col-span-1">
+    <h2 class="text-xl font-semibold text-slate-800 mb-4">📣 Жандуу окуялар</h2>
+    <div class="bg-white rounded-xl shadow p-4 h-96 overflow-y-auto">
+        <template x-if="feed.length === 0">
+            <div class="text-center text-slate-400 text-sm py-8">Окуялар жок</div>
+        </template>
+        <ul class="space-y-2">
+            <template x-for="(evt, idx) in feed" :key="idx">
+                <li class="text-xs border-b border-slate-100 pb-1.5">
+                    <span class="text-slate-400" x-text="evt.time"></span>
+                    <span class="ml-1" x-html="evt.html"></span>
+                </li>
             </template>
-            <ul class="space-y-2">
-                <template x-for="(evt, idx) in feed" :key="idx">
-                    <li class="text-xs border-b border-slate-100 pb-1.5">
-                        <span class="text-slate-400" x-text="evt.time"></span>
-                        <span class="ml-1" x-html="evt.html"></span>
-                    </li>
-                </template>
-            </ul>
-        </div>
+        </ul>
     </div>
+</div>
 </section>
 
 <!-- Classes grid -->
 <section class="mb-10">
-    <h2 class="text-xl font-semibold text-slate-800 mb-4">🏫 Мектептин бардык класстары</h2>
-    <div class="grid grid-cols-3 md:grid-cols-6 lg:grid-cols-8 gap-3">
-        <template x-for="cls in classes" :key="cls.id">
-            <div class="bg-white rounded-lg shadow p-3 text-center hover:shadow-md cursor-pointer">
-                <div class="text-2xl font-bold text-blue-700" x-text="cls.name"></div>
-                <div class="text-xs text-slate-500 mt-1">
-                    <span x-text="cls.student_count"></span> окуучу
-                </div>
-            </div>
-        </template>
+<div class="flex items-center justify-between mb-4">
+    <h2 class="text-xl font-semibold text-slate-800">🏫 Мектептин бардык класстары</h2>
+    <span class="text-xs text-slate-500">
+        Бардыгы: <span x-text="classes.length"></span>
+    </span>
+</div>
+
+<template x-if="classes.length === 0 && !classesLoading">
+    <div class="bg-amber-50 border border-amber-200 rounded-xl p-6 text-center">
+        <div class="text-amber-800 font-medium mb-2">⚠️ Класстар табылган жок</div>
+        <div class="text-sm text-amber-700">
+            Терминалда иштетиңиз: <code class="bg-amber-100 px-2 py-0.5 rounded">python seed_classes.py</code>
+        </div>
     </div>
+</template>
+
+<template x-if="classesLoading">
+    <div class="bg-white rounded-xl shadow p-6 text-center text-slate-500">⏳ Жүктөлүүдө...</div>
+</template>
+
+<div x-show="classes.length > 0" class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-3">
+    <template x-for="cls in classes" :key="cls.id">
+        <div class="rounded-lg shadow p-3 text-center hover:shadow-md cursor-pointer transition transform hover:-translate-y-0.5"
+             :class="gradeColor(cls.name)">
+            <div class="text-2xl font-bold" x-text="cls.name"></div>
+            <div class="text-xs mt-1 opacity-75">
+                <span x-text="cls.student_count"></span> окуучу
+            </div>
+        </div>
+    </template>
+</div>
 </section>
 
 <!-- Student registration -->
 <section class="mb-10">
-    <h2 class="text-xl font-semibold text-slate-800 mb-4">👤 Окуучу каттоо</h2>
+<h2 class="text-xl font-semibold text-slate-800 mb-4">📝 Окуучу каттоо</h2>
 
-    <div class="bg-white rounded-xl shadow p-6">
-        <form @submit.prevent="registerStudent" class="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div>
-                <label class="block text-sm font-medium text-slate-700 mb-1">Аты-жөнү</label>
-                <input type="text" x-model="newStudent.full_name" required
-                    class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-400 focus:outline-none"
-                    placeholder="Марлис Мирланов">
-            </div>
-            <div>
-                <label class="block text-sm font-medium text-slate-700 mb-1">Класс</label>
-                <select x-model="newStudent.class_id" required
-                    class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-400 focus:outline-none">
-                    <option value="">— тандаңыз —</option>
-                    <template x-for="c in classes" :key="c.id">
-                        <option :value="c.id" x-text="c.name"></option>
-                    </template>
-                </select>
-            </div>
-            <div>
-                <label class="block text-sm font-medium text-slate-700 mb-1">Сүрөтү</label>
-                <div class="flex space-x-2">
-                    <input type="file" accept="image/*" @change="onFilePicked($event)"
-                        class="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm">
-                    <button type="button" @click="openWebcam()"
-                        class="bg-slate-700 hover:bg-slate-800 text-white px-3 py-2 rounded-lg text-sm whitespace-nowrap">
-                        📷 Веб-камера
-                    </button>
-                </div>
-                <div x-show="newStudent.previewUrl" class="mt-2">
-                    <img :src="newStudent.previewUrl" class="w-32 h-32 object-cover rounded-md border">
-                </div>
-            </div>
-            <div class="md:col-span-3 flex items-center justify-between">
-                <div class="text-sm" x-show="registerMsg" :class="registerOk ? 'text-green-600' : 'text-red-600'" x-text="registerMsg"></div>
-                <button type="submit" :disabled="registering || !newStudent.photo"
-                    class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-medium shadow disabled:opacity-50">
-                    <span x-show="!registering">✅ Каттоо</span>
-                    <span x-show="registering">⏳ Иштеп жатат...</span>
+<div class="bg-white rounded-xl shadow p-6">
+    <form @submit.prevent="registerStudent" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div>
+            <label class="block text-sm font-medium text-slate-700 mb-1">Аты-жөнү</label>
+            <input type="text" x-model="newStudent.full_name" required
+                class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-400 focus:outline-none"
+                placeholder="Марлис Мирланов">
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-slate-700 mb-1">Класс</label>
+            <select x-model="newStudent.class_id" required
+                class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-400 focus:outline-none">
+                <option value="">— тандагыч —</option>
+                <template x-for="c in classes" :key="c.id">
+                    <option :value="c.id" x-text="c.name"></option>
+                </template>
+            </select>
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-slate-700 mb-1">Сүрөтү</label>
+            <div class="flex space-x-2">
+                <input type="file" accept="image/*" @change="onFilePicked($event)"
+                    class="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm">
+                <button type="button" @click="openWebcam()"
+                    class="bg-slate-700 hover:bg-slate-800 text-white px-3 py-2 rounded-lg text-sm whitespace-nowrap">
+                    📷 Веб-камера
                 </button>
             </div>
-        </form>
-    </div>
-
-    <div class="mt-6">
-        <h3 class="text-md font-semibold text-slate-700 mb-3">Катталган окуучулар (<span x-text="students.length"></span>)</h3>
-        <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-            <template x-for="s in students" :key="s.id">
-                <div class="bg-white rounded-lg shadow p-3 relative group">
-                    <img :src="s.photo_url" :alt="s.full_name" class="w-full h-32 object-cover rounded-md mb-2">
-                    <div class="text-sm font-medium text-slate-800 truncate" x-text="s.full_name"></div>
-                    <div class="text-xs text-slate-500" x-text="s.class_name"></div>
-                    <button @click="deleteStudent(s.id)"
-                        class="absolute top-1 right-1 bg-red-500 text-white rounded-full w-6 h-6 text-xs opacity-0 group-hover:opacity-100 transition">
-                        ✕
-                    </button>
-                </div>
-            </template>
-            <template x-if="students.length === 0">
-                <div class="col-span-full text-center text-slate-500 py-8">
-                    Окуучу катталган эмес.
-                </div>
-            </template>
+            <div x-show="newStudent.previewUrl" class="mt-2">
+                <img :src="newStudent.previewUrl" class="w-32 h-32 object-cover rounded-md border">
+            </div>
         </div>
+        <div class="md:col-span-3 flex items-center justify-between">
+            <div class="text-sm" x-show="registerMsg" :class="registerOk ? 'text-green-600' : 'text-red-600'" x-text="registerMsg"></div>
+            <button type="submit" :disabled="registering || !newStudent.photo"
+                class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-medium shadow disabled:opacity-50">
+                <span x-show="!registering">✅ Каттоо</span>
+                <span x-show="registering">⏳ Иштеп жатат...</span>
+            </button>
+        </div>
+    </form>
+</div>
+
+<div class="mt-6">
+    <h3 class="text-md font-semibold text-slate-700 mb-3">Катталган окуучулар (<span x-text="students.length"></span>)</h3>
+    <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+        <template x-for="s in students" :key="s.id">
+            <div class="bg-white rounded-lg shadow p-3 relative group">
+                <img :src="s.photo_url" :alt="s.full_name" class="w-full h-32 object-cover rounded-md mb-2">
+                <div class="text-sm font-medium text-slate-800 truncate" x-text="s.full_name"></div>
+                <div class="text-xs text-slate-500" x-text="s.class_name"></div>
+                <button @click="deleteStudent(s.id)"
+                    class="absolute top-1 right-1 bg-red-500 text-white rounded-full w-6 h-6 text-xs opacity-0 group-hover:opacity-100 transition">
+                    ✕
+                </button>
+            </div>
+        </template>
+        <template x-if="students.length === 0">
+            <div class="col-span-full text-center text-slate-500 py-8">
+                Окуучу катталган эмес.
+            </div>
+        </template>
     </div>
+</div>
 </section>
 
 <!-- Start lesson modal -->
 <div x-show="showStartLesson" x-cloak
-     class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-    <div class="bg-white rounded-xl shadow-xl p-6 w-full max-w-md" @click.away="showStartLesson = false">
-        <h3 class="text-lg font-semibold mb-4">🎯 Сабак баштоо</h3>
-        <form @submit.prevent="startLesson">
-            <div class="mb-3">
-                <label class="block text-sm font-medium text-slate-700 mb-1">Класс</label>
-                <select x-model="newLesson.class_id" required
-                    class="w-full border border-slate-300 rounded-lg px-3 py-2">
-                    <option value="">— тандаңыз —</option>
-                    <template x-for="c in classes" :key="c.id">
-                        <option :value="c.id" x-text="c.name + ' (' + c.student_count + ' окуучу)'"></option>
-                    </template>
-                </select>
-            </div>
-            <div class="mb-4">
-                <label class="block text-sm font-medium text-slate-700 mb-1">Сабак</label>
-                <select x-model="newLesson.subject_id" required
-                    class="w-full border border-slate-300 rounded-lg px-3 py-2">
-                    <option value="">— тандаңыз —</option>
-                    <template x-for="s in subjects" :key="s.id">
-                        <option :value="s.id" x-text="s.name"></option>
-                    </template>
-                </select>
-            </div>
-            <div class="text-sm text-red-600 mb-3" x-show="lessonMsg" x-text="lessonMsg"></div>
-            <div class="flex justify-end space-x-2">
-                <button type="button" @click="showStartLesson = false"
-                    class="px-4 py-2 rounded-lg bg-slate-200 hover:bg-slate-300">Жокко чыгаруу</button>
-                <button type="submit"
-                    class="px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 text-white font-medium">
-                    🚀 Баштоо
-                </button>
-            </div>
-        </form>
-    </div>
+ class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+<div class="bg-white rounded-xl shadow-xl p-6 w-full max-w-md" @click.away="showStartLesson = false">
+    <h3 class="text-lg font-semibold mb-4">🚀 Сабак баштоо</h3>
+    <form @submit.prevent="startLesson">
+        <div class="mb-3">
+            <label class="block text-sm font-medium text-slate-700 mb-1">Класс</label>
+            <select x-model="newLesson.class_id" required
+                class="w-full border border-slate-300 rounded-lg px-3 py-2">
+                <option value="">— тандагыч —</option>
+                <template x-for="c in classes" :key="c.id">
+                    <option :value="c.id" x-text="c.name + ' (' + c.student_count + ' окуучу)'"></option>
+                </template>
+            </select>
+        </div>
+        <div class="mb-4">
+            <label class="block text-sm font-medium text-slate-700 mb-1">Сабак</label>
+            <select x-model="newLesson.subject_id" required
+                class="w-full border border-slate-300 rounded-lg px-3 py-2">
+                <option value="">— тандагыч —</option>
+                <template x-for="s in subjects" :key="s.id">
+                    <option :value="s.id" x-text="s.name"></option>
+                </template>
+            </select>
+        </div>
+        <div class="text-xs text-slate-500 mb-3 bg-slate-50 p-2 rounded">
+            💡 Сабак башталгандан кийин камера терезеси автоматтык ачылат.
+        </div>
+        <div class="text-sm text-red-600 mb-3" x-show="lessonMsg" x-text="lessonMsg"></div>
+        <div class="flex justify-end space-x-2">
+            <button type="button" @click="showStartLesson = false"
+                class="px-4 py-2 rounded-lg bg-slate-200 hover:bg-slate-300">Жокко чыгаруу</button>
+            <button type="submit"
+                class="px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 text-white font-medium">
+                🚀 Баштоо
+            </button>
+        </div>
+    </form>
+</div>
 </div>
 
-<!-- Webcam modal: video element ALWAYS in DOM so srcObject sticks; we toggle visibility, not display -->
+<!-- Webcam modal -->
 <div x-show="showWebcam" x-cloak
-     class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
-    <div class="bg-white rounded-xl shadow-xl p-6 w-full max-w-lg" @click.away="closeWebcam()">
-        <h3 class="text-lg font-semibold mb-4">📷 Веб-камерадан сүрөт тартуу</h3>
+ class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
+<div class="bg-white rounded-xl shadow-xl p-6 w-full max-w-lg" @click.away="closeWebcam()">
+    <h3 class="text-lg font-semibold mb-4">📷 Веб-камерадан сүрөт тартуу</h3>
 
-        <div class="relative bg-black rounded-lg overflow-hidden mb-3" style="aspect-ratio: 4/3;">
-            <video x-ref="video" autoplay playsinline muted
-                   class="w-full h-full object-cover"
-                   :style="capturedDataUrl ? 'visibility:hidden' : 'visibility:visible'"></video>
-            <img :src="capturedDataUrl"
-                 x-show="capturedDataUrl"
-                 class="absolute inset-0 w-full h-full object-cover">
-        </div>
-        <canvas x-ref="canvas" class="hidden"></canvas>
+    <div class="relative bg-black rounded-lg overflow-hidden mb-3" style="aspect-ratio: 4/3;">
+        <video x-ref="video" autoplay playsinline muted
+               class="w-full h-full object-cover"
+               :style="capturedDataUrl ? 'visibility:hidden' : 'visibility:visible'"></video>
+        <img :src="capturedDataUrl"
+             x-show="capturedDataUrl"
+             class="absolute inset-0 w-full h-full object-cover">
+    </div>
+    <canvas x-ref="canvas" class="hidden"></canvas>
 
-        <div class="text-xs text-slate-500 mb-2" x-show="!capturedDataUrl && !webcamError">
-            <span x-text="webcamStatus"></span>
-        </div>
-        <div class="text-xs text-red-600 mb-2" x-show="webcamError" x-text="webcamError"></div>
+    <div class="text-xs text-slate-500 mb-2" x-show="!capturedDataUrl && !webcamError">
+        <span x-text="webcamStatus"></span>
+    </div>
+    <div class="text-xs text-red-600 mb-2" x-show="webcamError" x-text="webcamError"></div>
 
-        <div class="flex justify-between">
-            <button type="button" @click="closeWebcam()"
-                class="px-4 py-2 rounded-lg bg-slate-200 hover:bg-slate-300">Жабуу</button>
-            <div class="space-x-2">
-                <button type="button" x-show="capturedDataUrl" @click="retake()"
-                    class="px-4 py-2 rounded-lg bg-yellow-500 hover:bg-yellow-600 text-white">↻ Кайра тартуу</button>
-                <button type="button" x-show="!capturedDataUrl" @click="snapshot()"
-                    :disabled="!webcamReady"
-                    class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium disabled:opacity-50">📸 Сүрөт тартуу</button>
-                <button type="button" x-show="capturedDataUrl" @click="useSnapshot()"
-                    class="px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 text-white font-medium">✅ Колдонуу</button>
-            </div>
+    <div class="flex justify-between">
+        <button type="button" @click="closeWebcam()"
+            class="px-4 py-2 rounded-lg bg-slate-200 hover:bg-slate-300">Жабуу</button>
+        <div class="space-x-2">
+            <button type="button" x-show="capturedDataUrl" @click="retake()"
+                class="px-4 py-2 rounded-lg bg-yellow-500 hover:bg-yellow-600 text-white">↻ Кайра тартуу</button>
+            <button type="button" x-show="!capturedDataUrl" @click="snapshot()"
+                :disabled="!webcamReady"
+                class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium disabled:opacity-50">📸 Сүрөт тартуу</button>
+            <button type="button" x-show="capturedDataUrl" @click="useSnapshot()"
+                class="px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 text-white font-medium">✔ Колдондум</button>
         </div>
     </div>
+</div>
 </div>
 
 </div>
@@ -280,286 +311,325 @@
 <script>
 function overviewApp() {
 return {
-    stats: {},
-    classes: [],
-    subjects: [],
-    students: [],
-    activeLessons: [],
-    attendeesByLesson: {},
-    feed: [],
+stats: {},
+classes: [],
+subjects: [],
+students: [],
+activeLessons: [],
+attendeesByLesson: {},
+feed: [],
 
-    wsStatus: 'disconnected',
-    ws: null,
+classesLoading: true,
+loadError: '',
 
-    showStartLesson: false,
+wsStatus: 'disconnected',
+ws: null,
 
-    // webcam
-    showWebcam: false,
-    webcamStream: null,
-    webcamError: '',
-    webcamStatus: '',
-    webcamReady: false,
-    capturedDataUrl: '',
+showStartLesson: false,
 
-    newStudent: { full_name: '', class_id: '', photo: null, previewUrl: '' },
-    registering: false,
-    registerMsg: '',
-    registerOk: false,
+showWebcam: false,
+webcamStream: null,
+webcamError: '',
+webcamStatus: '',
+webcamReady: false,
+capturedDataUrl: '',
 
-    newLesson: { class_id: '', subject_id: '' },
-    lessonMsg: '',
+newStudent: { full_name: '', class_id: '', photo: null, previewUrl: '' },
+registering: false,
+registerMsg: '',
+registerOk: false,
 
-    async init() {
-        await this.refresh();
-        this.connectWS();
-        setInterval(() => this.refresh(), 5000);
-    },
+newLesson: { class_id: '', subject_id: '' },
+lessonMsg: '',
 
-    connectWS() {
-        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const url = proto + '//' + location.host + '/ws';
-        this.ws = new WebSocket(url);
-        this.ws.onopen = () => { this.wsStatus = 'connected'; };
-        this.ws.onclose = () => {
-            this.wsStatus = 'disconnected';
-            setTimeout(() => this.connectWS(), 2000);
-        };
-        this.ws.onerror = () => { this.wsStatus = 'disconnected'; };
-        this.ws.onmessage = (e) => {
-            try {
-                const evt = JSON.parse(e.data);
-                this.handleEvent(evt);
-            } catch (err) { console.error(err); }
-        };
-    },
+async init() {
+    await this.refresh();
+    this.connectWS();
+    setInterval(() => this.refresh(), 5000);
+},
 
-    handleEvent(evt) {
-        const t = new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        let html = '';
-        if (evt.type === 'student_entered') {
-            html = '✅ <b>' + evt.student_name + '</b> класска кирди';
-            this.refreshAttendees(evt.lesson_id);
-            this.refresh();
-        } else if (evt.type === 'emotion') {
-            html = '😐 <b>' + evt.student_name + '</b>: ' + evt.emotion;
-        } else if (evt.type === 'alert') {
-            html = '🚨 <b style="color:#dc2626">' + evt.message + '</b>';
-        } else if (evt.type === 'worker_started') {
-            const mode = evt.mode === 'mock' ? ' (СИМУЛЯЦИЯ)' : '';
-            html = '📹 Камера ишке кирди' + mode + ' (сабак #' + evt.lesson_id + ', ' + evt.roster_size + ' окуучу)';
-            this.refresh();
-        } else if (evt.type === 'worker_stopped') {
-            html = '⏹️ Камера токтоду (сабак #' + evt.lesson_id + ')';
-            this.refresh();
-        } else if (evt.type === 'worker_error') {
-            html = '❌ <b style="color:#dc2626">' + evt.message + '</b>';
-        } else if (evt.type === 'hello') {
-            html = '🔗 Туташты';
-        } else {
-            html = JSON.stringify(evt);
-        }
-        this.feed.unshift({ time: t, html: html });
-        if (this.feed.length > 80) this.feed.pop();
-    },
+// Color-code class cards by grade level (Kyrgyz: 1А, 2Б ... 11А)
+gradeColor(name) {
+    if (!name) return 'bg-white text-slate-800';
+    const grade = parseInt(name);
+    if (isNaN(grade)) return 'bg-white text-slate-800';
+    if (grade >= 1 && grade <= 4) return 'bg-green-50 border-2 border-green-300 text-green-800 hover:bg-green-100';
+    if (grade >= 5 && grade <= 8) return 'bg-blue-50 border-2 border-blue-300 text-blue-800 hover:bg-blue-100';
+    if (grade >= 9 && grade <= 11) return 'bg-purple-50 border-2 border-purple-300 text-purple-800 hover:bg-purple-100';
+    return 'bg-white text-slate-800';
+},
 
-    async refresh() {
+connectWS() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = proto + '//' + location.host + '/ws';
+    this.ws = new WebSocket(url);
+    this.ws.onopen = () => { this.wsStatus = 'connected'; };
+    this.ws.onclose = () => {
+        this.wsStatus = 'disconnected';
+        setTimeout(() => this.connectWS(), 2000);
+    };
+    this.ws.onerror = () => { this.wsStatus = 'disconnected'; };
+    this.ws.onmessage = (e) => {
         try {
-            const [s, c, sub, st, al] = await Promise.all([
-                fetch('/api/overview').then(r => r.json()),
-                fetch('/api/classes').then(r => r.json()),
-                fetch('/api/subjects').then(r => r.json()),
-                fetch('/api/students').then(r => r.json()),
-                fetch('/api/lessons/active').then(r => r.json()),
-            ]);
-            this.stats = s;
-            this.classes = c;
-            this.subjects = sub;
-            this.students = st;
-            this.activeLessons = al;
-            for (const l of al) {
-                if (!(l.id in this.attendeesByLesson)) {
-                    this.refreshAttendees(l.id);
-                }
+            const evt = JSON.parse(e.data);
+            this.handleEvent(evt);
+        } catch (err) { console.error(err); }
+    };
+},
+
+handleEvent(evt) {
+    const t = new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    let html = '';
+    if (evt.type === 'student_entered') {
+        html = '✅ <b>' + evt.student_name + '</b> класска кирди';
+        this.refreshAttendees(evt.lesson_id);
+        this.refresh();
+    } else if (evt.type === 'emotion') {
+        html = '😀 <b>' + evt.student_name + '</b>: ' + evt.emotion;
+    } else if (evt.type === 'alert') {
+        html = '⚠ <b style="color:#dc2626">' + evt.message + '</b>';
+    } else if (evt.type === 'worker_started') {
+        const mode = evt.mode === 'mock' ? ' (СИМУЛЯЦИЯ)' : '';
+        html = '🟩 Камера ишке кирди' + mode + ' (сабак #' + evt.lesson_id + ', ' + evt.roster_size + ' окуучу)';
+        this.refresh();
+    } else if (evt.type === 'worker_stopped') {
+        html = '⏹️ Камера токтоду (сабак #' + evt.lesson_id + ')';
+        this.refresh();
+    } else if (evt.type === 'worker_error') {
+        html = '❗ <b style="color:#dc2626">' + evt.message + '</b>';
+    } else if (evt.type === 'hello') {
+        html = '🔗 Туташты';
+    } else {
+        html = JSON.stringify(evt);
+    }
+    this.feed.unshift({ time: t, html: html });
+    if (this.feed.length > 80) this.feed.pop();
+},
+
+// Fetch with credentials. Returns null if 401 or error (no throw)
+async safeFetch(url, opts = {}) {
+    try {
+        const r = await fetch(url, { credentials: 'same-origin', ...opts });
+        if (r.status === 401) {
+            window.location.href = '/login';
+            return null;
+        }
+        if (!r.ok) {
+            console.error('Fetch failed', url, r.status);
+            return null;
+        }
+        return await r.json();
+    } catch (e) {
+        console.error('Fetch error', url, e);
+        return null;
+    }
+},
+
+async refresh() {
+    // Independent fetches — one failure doesn't kill the rest
+    const [s, c, sub, st, al] = await Promise.all([
+        this.safeFetch('/api/overview'),
+        this.safeFetch('/api/classes'),
+        this.safeFetch('/api/subjects'),
+        this.safeFetch('/api/students'),
+        this.safeFetch('/api/lessons/active'),
+    ]);
+
+    if (s) this.stats = s;
+    if (c) { this.classes = c; this.classesLoading = false; }
+    else { this.classesLoading = false; if (this.classes.length === 0) this.loadError = 'Класстарды жүктөө мүмкүн эмес'; }
+    if (sub) this.subjects = sub;
+    if (st) this.students = st;
+    if (al) {
+        this.activeLessons = al;
+        for (const l of al) {
+            if (!(l.id in this.attendeesByLesson)) {
+                this.refreshAttendees(l.id);
             }
-        } catch (e) { console.error(e); }
-    },
-
-    async refreshAttendees(lessonId) {
-        try {
-            const r = await fetch('/api/lessons/' + lessonId + '/attendees').then(r => r.json());
-            this.attendeesByLesson[lessonId] = r;
-        } catch (e) { console.error(e); }
-    },
-
-    formatTime(iso) {
-        if (!iso) return '';
-        const d = new Date(iso + 'Z');
-        return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-    },
-
-    onFilePicked(ev) {
-        const f = ev.target.files[0];
-        if (!f) return;
-        this.newStudent.photo = f;
-        this.newStudent.previewUrl = URL.createObjectURL(f);
-    },
-
-    // ---- Webcam ----
-    async openWebcam() {
-        this.webcamError = '';
-        this.capturedDataUrl = '';
-        this.webcamReady = false;
-        this.webcamStatus = 'Веб-камера сурап жатат...';
-
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            this.webcamError = '❌ Веб-камера API жок. http://localhost же https колдонуңуз.';
-            this.showWebcam = true;
-            return;
         }
-        if (location.protocol !== 'https:'
-            && location.hostname !== 'localhost'
-            && location.hostname !== '127.0.0.1') {
-            this.webcamError = '⚠️ Браузер веб-камераны ачпайт. Браузерден '
-                + 'http://localhost:8000 же http://127.0.0.1:8000 деп ачыңыз '
-                + '(азыр: ' + location.host + ').';
-            this.showWebcam = true;
-            return;
-        }
+    }
 
+    if (s && c && sub && st && al) this.loadError = '';
+},
+
+async refreshAttendees(lessonId) {
+    const r = await this.safeFetch('/api/lessons/' + lessonId + '/attendees');
+    if (r) this.attendeesByLesson[lessonId] = r;
+},
+
+formatTime(iso) {
+    if (!iso) return '';
+    const d = new Date(iso + 'Z');
+    return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+},
+
+onFilePicked(ev) {
+    const f = ev.target.files[0];
+    if (!f) return;
+    this.newStudent.photo = f;
+    this.newStudent.previewUrl = URL.createObjectURL(f);
+},
+
+// ---- Webcam ----
+async openWebcam() {
+    this.webcamError = '';
+    this.capturedDataUrl = '';
+    this.webcamReady = false;
+    this.webcamStatus = 'Веб-камера сурап жатат...';
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        this.webcamError = '❗ Веб-камера API жок. http://localhost же https колдонуңуз.';
         this.showWebcam = true;
-        // Wait for the <video> element to be rendered (it's inside x-show wrapper)
-        await this.$nextTick();
-        await new Promise(r => setTimeout(r, 50));
+        return;
+    }
+    if (location.protocol !== 'https:'
+        && location.hostname !== 'localhost'
+        && location.hostname !== '127.0.0.1') {
+        this.webcamError = '⚠️ Браузер веб-камераны ачпайт. Браузерден '
+            + 'http://localhost:8000 же http://127.0.0.1:8000 деп ачыңыз '
+            + '(азыр: ' + location.host + ').';
+        this.showWebcam = true;
+        return;
+    }
 
-        try {
-            this.webcamStream = await navigator.mediaDevices.getUserMedia({
-                video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
-                audio: false,
-            });
-            const v = this.$refs.video;
-            if (!v) {
-                this.webcamError = '❌ Видео элемент табылган жок';
-                return;
-            }
-            v.srcObject = this.webcamStream;
-            v.onloadedmetadata = () => {
-                v.play().catch(err => {
-                    this.webcamError = '❌ Видеону баштоо мүмкүн эмес: ' + err.message;
-                });
-                this.webcamReady = true;
-                this.webcamStatus = '✅ Камера даяр. "📸 Сүрөт тартуу" басыңыз.';
-            };
-        } catch (e) {
-            this.webcamError = '❌ Веб-камераны ачуу мүмкүн эмес: ' + e.name + ' / ' + e.message;
-            console.error('getUserMedia failed:', e);
-        }
-    },
+    this.showWebcam = true;
+    await this.$nextTick();
+    await new Promise(r => setTimeout(r, 50));
 
-    closeWebcam() {
-        if (this.webcamStream) {
-            this.webcamStream.getTracks().forEach(t => t.stop());
-            this.webcamStream = null;
-        }
+    try {
+        this.webcamStream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+            audio: false,
+        });
         const v = this.$refs.video;
-        if (v) v.srcObject = null;
-        this.showWebcam = false;
-        this.capturedDataUrl = '';
-        this.webcamReady = false;
-        this.webcamError = '';
-        this.webcamStatus = '';
-    },
-
-    snapshot() {
-        const video = this.$refs.video;
-        const canvas = this.$refs.canvas;
-        if (!video || !video.videoWidth) {
-            this.webcamError = 'Видео даяр эмес, бир аз күтө туруңуз';
+        if (!v) {
+            this.webcamError = '❗ Видео элемент табылган жок';
             return;
         }
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        this.capturedDataUrl = canvas.toDataURL('image/jpeg', 0.92);
-    },
+        v.srcObject = this.webcamStream;
+        v.onloadedmetadata = () => {
+            v.play().catch(err => {
+                this.webcamError = '❗ Видеону баштоо мүмкүн эмес: ' + err.message;
+            });
+            this.webcamReady = true;
+            this.webcamStatus = '✔ Камера даяр. "📸 Сүрөт тартуу" басыңыз.';
+        };
+    } catch (e) {
+        this.webcamError = '❗ Веб-камераны ачуу мүмкүн эмес: ' + e.name + ' / ' + e.message;
+        console.error('getUserMedia failed:', e);
+    }
+},
 
-    retake() {
-        this.capturedDataUrl = '';
-    },
+closeWebcam() {
+    if (this.webcamStream) {
+        this.webcamStream.getTracks().forEach(t => t.stop());
+        this.webcamStream = null;
+    }
+    const v = this.$refs.video;
+    if (v) v.srcObject = null;
+    this.showWebcam = false;
+    this.capturedDataUrl = '';
+    this.webcamReady = false;
+    this.webcamError = '';
+    this.webcamStatus = '';
+},
 
-    async useSnapshot() {
-        if (!this.capturedDataUrl) return;
-        const res = await fetch(this.capturedDataUrl);
-        const blob = await res.blob();
-        const filename = 'webcam_' + Date.now() + '.jpg';
-        this.newStudent.photo = new File([blob], filename, { type: 'image/jpeg' });
-        this.newStudent.previewUrl = this.capturedDataUrl;
-        this.closeWebcam();
-    },
+snapshot() {
+    const video = this.$refs.video;
+    const canvas = this.$refs.canvas;
+    if (!video || !video.videoWidth) {
+        this.webcamError = 'Видео даяр эмес, бир аз күтүп туруңуз';
+        return;
+    }
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    this.capturedDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+},
 
-    async registerStudent() {
-        if (!this.newStudent.photo) {
-            this.registerMsg = '❌ Сүрөт тандаңыз же тартыңыз';
-            this.registerOk = false;
-            return;
-        }
-        this.registering = true;
-        this.registerMsg = '';
-        const fd = new FormData();
-        fd.append('full_name', this.newStudent.full_name);
-        fd.append('class_id', this.newStudent.class_id);
-        fd.append('photo', this.newStudent.photo);
-        try {
-            const r = await fetch('/api/students', { method: 'POST', body: fd });
-            if (!r.ok) {
-                const err = await r.json();
-                this.registerMsg = '❌ ' + (err.detail || 'Ката');
-                this.registerOk = false;
-            } else {
-                this.registerMsg = '✅ Ийгиликтүү катталды';
-                this.registerOk = true;
-                this.newStudent = { full_name: '', class_id: '', photo: null, previewUrl: '' };
-                document.querySelectorAll('input[type=file]').forEach(el => el.value = '');
-                await this.refresh();
-            }
-        } catch (e) {
-            this.registerMsg = '❌ ' + e.message;
-            this.registerOk = false;
-        }
-        this.registering = false;
-    },
+retake() {
+    this.capturedDataUrl = '';
+},
 
-    async deleteStudent(id) {
-        if (!confirm('Окуучуну өчүрөсүзбү?')) return;
-        await fetch('/api/students/' + id, { method: 'DELETE' });
-        await this.refresh();
-    },
+async useSnapshot() {
+    if (!this.capturedDataUrl) return;
+    const res = await fetch(this.capturedDataUrl);
+    const blob = await res.blob();
+    const filename = 'webcam_' + Date.now() + '.jpg';
+    this.newStudent.photo = new File([blob], filename, { type: 'image/jpeg' });
+    this.newStudent.previewUrl = this.capturedDataUrl;
+    this.closeWebcam();
+},
 
-    async startLesson() {
-        this.lessonMsg = '';
-        const r = await fetch('/api/lessons/start', {
+async registerStudent() {
+    if (!this.newStudent.photo) {
+        this.registerMsg = '❗ Сүрөт тандагыч же тартыңыз';
+        this.registerOk = false;
+        return;
+    }
+    this.registering = true;
+    this.registerMsg = '';
+    const fd = new FormData();
+    fd.append('full_name', this.newStudent.full_name);
+    fd.append('class_id', this.newStudent.class_id);
+    fd.append('photo', this.newStudent.photo);
+    try {
+        const r = await fetch('/api/students', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                class_id: parseInt(this.newLesson.class_id),
-                subject_id: parseInt(this.newLesson.subject_id),
-            }),
+            body: fd,
+            credentials: 'same-origin',
         });
         if (!r.ok) {
             const err = await r.json();
-            this.lessonMsg = err.detail || 'Ката';
-            return;
+            this.registerMsg = '❗ ' + (err.detail || 'Ката');
+            this.registerOk = false;
+        } else {
+            this.registerMsg = '✔ Ийгиликтүү катталды';
+            this.registerOk = true;
+            this.newStudent = { full_name: '', class_id: '', photo: null, previewUrl: '' };
+            document.querySelectorAll('input[type=file]').forEach(el => el.value = '');
+            await this.refresh();
         }
-        this.showStartLesson = false;
-        this.newLesson = { class_id: '', subject_id: '' };
-        await this.refresh();
-    },
+    } catch (e) {
+        this.registerMsg = '❗ ' + e.message;
+        this.registerOk = false;
+    }
+    this.registering = false;
+},
 
-    async stopLesson(id) {
-        if (!confirm('Сабакты аяктайсызбы?')) return;
-        await fetch('/api/lessons/' + id + '/stop', { method: 'POST' });
-        await this.refresh();
-    },
+async deleteStudent(id) {
+    if (!confirm('Окуучуну чыгарып салдыбы?')) return;
+    await fetch('/api/students/' + id, { method: 'DELETE', credentials: 'same-origin' });
+    await this.refresh();
+},
+
+async startLesson() {
+    this.lessonMsg = '';
+    const r = await fetch('/api/lessons/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+            class_id: parseInt(this.newLesson.class_id),
+            subject_id: parseInt(this.newLesson.subject_id),
+        }),
+    });
+    if (!r.ok) {
+        const err = await r.json();
+        this.lessonMsg = err.detail || 'Ката';
+        return;
+    }
+    this.showStartLesson = false;
+    this.newLesson = { class_id: '', subject_id: '' };
+    await this.refresh();
+},
+
+async stopLesson(id) {
+    if (!confirm('Сабакты аяктайсызбы?')) return;
+    await fetch('/api/lessons/' + id + '/stop', { method: 'POST', credentials: 'same-origin' });
+    await this.refresh();
+},
 };
 }
 </script>
