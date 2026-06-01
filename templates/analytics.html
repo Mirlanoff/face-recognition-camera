@@ -1,0 +1,368 @@
+{% extends "base.html" %}
+
+{% block title %}Аналитика &middot; Мектеп таануу{% endblock %}
+
+{% block content %}
+<div x-data="analyticsPage()" x-init="init()" class="space-y-6">
+
+<!-- Filter bar -->
+<div class="bg-white rounded-xl shadow p-4 flex flex-wrap gap-3 items-center">
+  <div class="text-slate-700 font-medium mr-2">🔍 Чыпка:</div>
+
+  <select x-model="scope" @change="onScopeChange()"
+          class="border border-slate-300 rounded-lg px-3 py-2 text-sm">
+    <option value="all">Бардык маалыматтар</option>
+    <option value="class">Класс боюнча</option>
+    <option value="lesson">Сабак боюнча</option>
+  </select>
+
+  <template x-if="scope === 'class'">
+    <select x-model="selectedClassId" @change="reloadAll()"
+            class="border border-slate-300 rounded-lg px-3 py-2 text-sm">
+      <option value="">— класс тандаңыз —</option>
+      <template x-for="c in classes" :key="c.id">
+        <option :value="c.id" x-text="c.name + ' (' + c.student_count + ')'"></option>
+      </template>
+    </select>
+  </template>
+
+  <template x-if="scope === 'lesson'">
+    <select x-model="selectedLessonId" @change="reloadAll()"
+            class="border border-slate-300 rounded-lg px-3 py-2 text-sm min-w-[280px]">
+      <option value="">— сабак тандаңыз —</option>
+      <template x-for="l in lessons" :key="l.id">
+        <option :value="l.id"
+                x-text="(l.class_name || '?') + ' · ' + (l.subject_name || '?') + ' · ' + formatDate(l.started_at) + (l.is_active ? ' 🔴' : '')"></option>
+      </template>
+    </select>
+  </template>
+
+  <button @click="reloadAll()"
+          class="ml-auto bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg">
+    🔄 Жаңылоо
+  </button>
+</div>
+
+<!-- KPI cards -->
+<div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+  <div class="bg-white rounded-xl shadow p-5">
+    <div class="text-slate-500 text-xs uppercase font-medium">Жалпы эмоциялар</div>
+    <div class="text-3xl font-bold text-slate-800 mt-2" x-text="totalEmotions"></div>
+  </div>
+  <div class="bg-white rounded-xl shadow p-5">
+    <div class="text-slate-500 text-xs uppercase font-medium">Үстөмдүк кылган эмоция</div>
+    <div class="text-3xl font-bold text-slate-800 mt-2" x-text="dominantEmotion || '—'"></div>
+  </div>
+  <div class="bg-white rounded-xl shadow p-5">
+    <div class="text-slate-500 text-xs uppercase font-medium">Терс эмоциялардын үлүшү</div>
+    <div class="text-3xl font-bold mt-2"
+         :class="negativePct > 30 ? 'text-red-600' : 'text-emerald-600'"
+         x-text="negativePct + '%'"></div>
+  </div>
+  <div class="bg-white rounded-xl shadow p-5">
+    <div class="text-slate-500 text-xs uppercase font-medium">Окуучулар</div>
+    <div class="text-3xl font-bold text-slate-800 mt-2" x-text="studentRows.length"></div>
+  </div>
+</div>
+
+<!-- Charts row -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+  <!-- Pie -->
+  <div class="bg-white rounded-xl shadow p-6">
+    <h3 class="text-lg font-bold text-slate-800 mb-4">🥧 Эмоциялардын бөлүштүрүлүшү</h3>
+    <div class="relative h-72">
+      <canvas id="emotionsPie"></canvas>
+    </div>
+    <template x-if="totalEmotions === 0">
+      <div class="text-center text-slate-400 text-sm mt-4">Маалымат жок</div>
+    </template>
+  </div>
+
+  <!-- Timeline -->
+  <div class="bg-white rounded-xl shadow p-6">
+    <h3 class="text-lg font-bold text-slate-800 mb-4">
+      📈 Убакыт боюнча эмоциялар
+      <span class="text-slate-400 text-xs font-normal" x-show="scope !== 'lesson'">(сабак тандаңыз)</span>
+    </h3>
+    <div class="relative h-72">
+      <canvas id="emotionsTimeline"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- Attendance bar -->
+<div class="bg-white rounded-xl shadow p-6">
+  <h3 class="text-lg font-bold text-slate-800 mb-4">📊 Класстар боюнча катышуу (акыркы 30 күн)</h3>
+  <div class="relative h-80">
+    <canvas id="attendanceBar"></canvas>
+  </div>
+  <template x-if="attendanceRows.length === 0">
+    <div class="text-center text-slate-400 text-sm mt-4">Маалымат жок</div>
+  </template>
+</div>
+
+<!-- Students table -->
+<div class="bg-white rounded-xl shadow p-6">
+  <h3 class="text-lg font-bold text-slate-800 mb-4">👥 Окуучулар боюнча жыйынтык</h3>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-50 text-slate-600 text-left">
+        <tr>
+          <th class="px-3 py-2">Окуучу</th>
+          <th class="px-3 py-2">Класс</th>
+          <th class="px-3 py-2">Сабактар</th>
+          <th class="px-3 py-2">Үстөмдүк эмоция</th>
+          <th class="px-3 py-2">Терс %</th>
+        </tr>
+      </thead>
+      <tbody>
+        <template x-for="row in studentRows" :key="row.student_id">
+          <tr class="border-t border-slate-100 hover:bg-slate-50">
+            <td class="px-3 py-2 font-medium text-slate-800" x-text="row.student_name"></td>
+            <td class="px-3 py-2 text-slate-600" x-text="row.class_name"></td>
+            <td class="px-3 py-2 text-slate-600" x-text="row.lessons_seen"></td>
+            <td class="px-3 py-2">
+              <span class="inline-block px-2 py-0.5 rounded text-xs font-medium"
+                    :class="emotionColor(row.dominant_emotion)"
+                    x-text="emotionLabelKy(row.dominant_emotion) || '—'"></span>
+            </td>
+            <td class="px-3 py-2 font-medium"
+                :class="row.negative_pct > 30 ? 'text-red-600' : 'text-emerald-600'"
+                x-text="row.negative_pct + '%'"></td>
+          </tr>
+        </template>
+        <template x-if="studentRows.length === 0">
+          <tr><td colspan="5" class="px-3 py-6 text-center text-slate-400">Маалымат жок</td></tr>
+        </template>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+</div>
+
+<script>
+function analyticsPage() {
+return {
+  scope: 'all',
+  classes: [],
+  lessons: [],
+  selectedClassId: '',
+  selectedLessonId: '',
+
+  pieData: {},
+  totalEmotions: 0,
+  dominantEmotion: null,
+  negativePct: 0,
+
+  attendanceRows: [],
+  studentRows: [],
+
+  charts: {
+    pie: null,
+    timeline: null,
+    attendance: null,
+  },
+
+  NEG: ['sad', 'angry', 'fear', 'disgust'],
+  COLOR_MAP: {
+    happy: '#10b981',
+    neutral: '#94a3b8',
+    surprise: '#f59e0b',
+    sad: '#3b82f6',
+    angry: '#ef4444',
+    fear: '#a855f7',
+    disgust: '#84cc16',
+    contempt: '#64748b',
+  },
+  LABEL_KY: {
+    happy: '😊 Бактылуу',
+    neutral: '😐 Калыс',
+    surprise: '😲 Таң калуу',
+    sad: '😢 Кайгы',
+    angry: '😠 Ачуу',
+    fear: '😨 Коркуу',
+    disgust: '🤢 Жийиркенүү',
+    contempt: '😒 Жек көрүү',
+  },
+
+  async init() {
+    await Promise.all([this.loadClasses(), this.loadLessons()]);
+    await this.reloadAll();
+  },
+
+  async loadClasses() {
+    const r = await fetch('/api/classes');
+    this.classes = await r.json();
+  },
+
+  async loadLessons() {
+    const [hist, act] = await Promise.all([
+      fetch('/api/lessons/history').then(r => r.json()),
+      fetch('/api/lessons/active').then(r => r.json()),
+    ]);
+    const active = act.map(l => ({ ...l, is_active: true }));
+    const history = hist.map(l => ({ ...l, is_active: false }));
+    this.lessons = [...active, ...history];
+  },
+
+  onScopeChange() {
+    this.selectedClassId = '';
+    this.selectedLessonId = '';
+    this.reloadAll();
+  },
+
+  async reloadAll() {
+    await Promise.all([
+      this.reloadPie(),
+      this.reloadTimeline(),
+      this.reloadAttendance(),
+      this.reloadStudents(),
+    ]);
+  },
+
+  buildScopeQS() {
+    if (this.scope === 'lesson' && this.selectedLessonId) {
+      return '?lesson_id=' + this.selectedLessonId;
+    }
+    if (this.scope === 'class' && this.selectedClassId) {
+      return '?class_id=' + this.selectedClassId;
+    }
+    return '';
+  },
+
+  async reloadPie() {
+    const qs = this.buildScopeQS();
+    const r = await fetch('/api/analytics/emotions_pie' + qs);
+    const data = await r.json();
+    this.pieData = data.counts || {};
+    this.totalEmotions = data.total || 0;
+
+    const entries = Object.entries(this.pieData);
+    this.dominantEmotion = entries.length
+      ? this.LABEL_KY[entries.reduce((a, b) => a[1] > b[1] ? a : b)[0]] || entries.reduce((a, b) => a[1] > b[1] ? a : b)[0]
+      : null;
+    const negSum = entries.filter(([k]) => this.NEG.includes(k)).reduce((s, [, v]) => s + v, 0);
+    this.negativePct = this.totalEmotions > 0 ? Math.round(negSum / this.totalEmotions * 1000) / 10 : 0;
+
+    this.renderPie();
+  },
+
+  renderPie() {
+    const ctx = document.getElementById('emotionsPie');
+    if (!ctx) return;
+    const labels = Object.keys(this.pieData);
+    const values = Object.values(this.pieData);
+    const colors = labels.map(k => this.COLOR_MAP[k] || '#cbd5e1');
+    const displayLabels = labels.map(k => this.LABEL_KY[k] || k);
+
+    if (this.charts.pie) this.charts.pie.destroy();
+    this.charts.pie = new Chart(ctx, {
+      type: 'doughnut',
+      data: {
+        labels: displayLabels,
+        datasets: [{ data: values, backgroundColor: colors, borderWidth: 2, borderColor: '#fff' }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: 'right' } },
+      },
+    });
+  },
+
+  async reloadTimeline() {
+    if (this.scope !== 'lesson' || !this.selectedLessonId) {
+      if (this.charts.timeline) { this.charts.timeline.destroy(); this.charts.timeline = null; }
+      return;
+    }
+    const r = await fetch('/api/analytics/emotions_timeline?lesson_id=' + this.selectedLessonId);
+    const data = await r.json();
+    const series = data.series || [];
+
+    const minutes = series.map(s => 'мин. ' + s.minute);
+    const allEmotions = new Set();
+    series.forEach(s => Object.keys(s.counts).forEach(e => allEmotions.add(e)));
+
+    const datasets = [...allEmotions].map(emo => ({
+      label: this.LABEL_KY[emo] || emo,
+      data: series.map(s => s.counts[emo] || 0),
+      borderColor: this.COLOR_MAP[emo] || '#cbd5e1',
+      backgroundColor: (this.COLOR_MAP[emo] || '#cbd5e1') + '33',
+      tension: 0.3,
+      fill: false,
+    }));
+
+    const ctx = document.getElementById('emotionsTimeline');
+    if (!ctx) return;
+    if (this.charts.timeline) this.charts.timeline.destroy();
+    this.charts.timeline = new Chart(ctx, {
+      type: 'line',
+      data: { labels: minutes, datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: 'bottom' } },
+        scales: { y: { beginAtZero: true, ticks: { precision: 0 } } },
+      },
+    });
+  },
+
+  async reloadAttendance() {
+    const r = await fetch('/api/analytics/attendance_by_class?days=30');
+    const data = await r.json();
+    this.attendanceRows = data.rows || [];
+    this.renderAttendance();
+  },
+
+  renderAttendance() {
+    const ctx = document.getElementById('attendanceBar');
+    if (!ctx) return;
+    const labels = this.attendanceRows.map(r => r.class_name);
+    const values = this.attendanceRows.map(r => r.avg_attendance_pct);
+    const colors = values.map(v => v >= 80 ? '#10b981' : v >= 60 ? '#f59e0b' : '#ef4444');
+
+    if (this.charts.attendance) this.charts.attendance.destroy();
+    this.charts.attendance = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{ label: 'Орточо катышуу %', data: values, backgroundColor: colors }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: { y: { beginAtZero: true, max: 100, ticks: { callback: v => v + '%' } } },
+      },
+    });
+  },
+
+  async reloadStudents() {
+    const qs = (this.scope === 'class' && this.selectedClassId) ? '?class_id=' + this.selectedClassId : '';
+    const r = await fetch('/api/analytics/student_summary' + qs);
+    const data = await r.json();
+    this.studentRows = data.rows || [];
+  },
+
+  emotionLabelKy(e) { return e ? (this.LABEL_KY[e] || e) : null; },
+  emotionColor(e) {
+    if (!e) return 'bg-slate-100 text-slate-600';
+    if (this.NEG.includes(e)) return 'bg-red-100 text-red-700';
+    if (e === 'happy') return 'bg-emerald-100 text-emerald-700';
+    if (e === 'surprise') return 'bg-amber-100 text-amber-700';
+    return 'bg-slate-100 text-slate-700';
+  },
+
+  formatDate(iso) {
+    if (!iso) return '';
+    try {
+      const d = new Date(iso);
+      return d.toLocaleDateString('ru-RU') + ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    } catch (e) { return iso; }
+  },
+};
+}
+</script>
+{% endblock %}
