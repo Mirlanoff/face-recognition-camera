@@ -1,52 +1,18 @@
 """
 FastAPI server for the school recognition dashboard.
 
-Routes:
-HTML
-GET  /                        -> overview page
-GET  /analytics               -> analytics page
-GET  /alerts                  -> alerts page
-GET  /history                 -> history page
+Stage 5 additions:
+- Users + roles (admin / pedagog / director) with session-cookie auth.
+- Login page + /api/login, /api/logout, /api/me.
+- Admin-only /api/users CRUD.
+- Schedule CRUD (/api/schedule) + background scheduler thread that
+  auto-starts/auto-stops lessons.
+- Existing endpoints now require authentication.
 
-Data
-GET  /api/classes
-GET  /api/subjects
-GET  /api/students            (optional class_id)
-POST /api/students            (multipart register)
-DELETE /api/students/{id}
-
-GET  /api/lessons/active
-GET  /api/lessons/history
-POST /api/lessons/start
-POST /api/lessons/{id}/stop
-
-GET  /api/lessons/{id}/attendees
-GET  /api/lessons/{id}/emotions
-GET  /api/lessons/{id}/detail
-GET  /api/lessons/{id}/pdf
-
-GET  /api/overview
-
-Analytics
-GET  /api/analytics/emotions_pie
-GET  /api/analytics/emotions_timeline
-GET  /api/analytics/attendance_by_class
-GET  /api/analytics/student_summary
-
-Alerts
-GET    /api/alerts
-GET    /api/alerts/stats
-PATCH  /api/alerts/{id}
-POST   /api/alerts/mark_all_seen
-DELETE /api/alerts/{id}
-DELETE /api/alerts
-
-History
-GET  /api/history/lessons    (filters: class_id, subject_id, date_from, date_to, limit)
-GET  /api/history/stats      (filters: same)
-
-WebSocket
-/ws       -> live events
+Roles:
+  admin    -> everything
+  director -> read-only, all classes (analytics + history + alerts view)
+  pedagog  -> CRUD lessons + see data ONLY for their assigned class
 """
 
 import os
@@ -61,9 +27,9 @@ import numpy as np
 
 from fastapi import (
   FastAPI, Depends, HTTPException, UploadFile, File, Form,
-  Request, WebSocket, WebSocketDisconnect,
+  Request, Response, WebSocket, WebSocketDisconnect,
 )
-from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -72,8 +38,11 @@ from sqlalchemy import func
 from models import (
   init_db, get_session, SessionLocal,
   SchoolClass, Subject, Student, Lesson, Attendance, EmotionLog, Alert,
+  User, Schedule,
 )
 import recognizer_worker
+import scheduler as auto_scheduler
+import auth
 
 STUDENTS_DIR = Path("students")
 STUDENTS_DIR.mkdir(exist_ok=True)
@@ -99,7 +68,13 @@ async def on_startup():
   main_loop = asyncio.get_event_loop()
   event_queue = asyncio.Queue()
   asyncio.create_task(_broadcast_loop())
-  print("[server] DB ready, event hub running.")
+  auto_scheduler.start_scheduler(event_queue, main_loop)
+  print("[server] DB ready, event hub + auto-lesson scheduler running.")
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+  auto_scheduler.stop_scheduler()
 
 
 async def _broadcast_loop():
@@ -107,12 +82,12 @@ async def _broadcast_loop():
     evt = await event_queue.get()
     dead = []
     for ws in list(connected_sockets):
-      try:
-        await ws.send_json(evt)
-      except Exception:
-        dead.append(ws)
+        try:
+            await ws.send_json(evt)
+        except Exception:
+            dead.append(ws)
     for d in dead:
-      connected_sockets.discard(d)
+        connected_sockets.discard(d)
 
 
 # ===== Lazy InsightFace loader for STUDENT REGISTRATION =====
@@ -125,39 +100,109 @@ def get_insightface_for_registration():
     from insightface.app import FaceAnalysis
     print("[server] Loading InsightFace for student registration ...")
     _insightface_app = FaceAnalysis(
-      name="buffalo_l",
-      providers=["CPUExecutionProvider"],
-      allowed_modules=["detection", "recognition"],
+        name="buffalo_l",
+        providers=["CPUExecutionProvider"],
+        allowed_modules=["detection", "recognition"],
     )
     _insightface_app.prepare(ctx_id=0, det_size=(640, 640))
   return _insightface_app
 
 
-# ===== HTML pages =====
+# ===== Auth endpoints =====
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request):
+  return templates.TemplateResponse(request, "login.html", {"active_tab": ""})
+
+
+@app.post("/api/login")
+async def api_login(payload: dict, response: Response, db: Session = Depends(get_session)):
+  username = (payload.get("username") or "").strip()
+  password = payload.get("password") or ""
+  if not username or not password:
+    raise HTTPException(status_code=400, detail="username жана password керек")
+  user = db.query(User).filter(User.username == username).first()
+  if user is None or not user.check_password(password):
+    raise HTTPException(status_code=401, detail="Логин же пароль туура эмес")
+  sid = auth.create_session(user.id)
+  response.set_cookie(
+    key=auth.COOKIE_NAME, value=sid,
+    httponly=True, samesite="lax", max_age=60 * 60 * 24 * 30,
+  )
+  return {"ok": True, "user": auth.user_dict(user)}
+
+
+@app.post("/api/logout")
+def api_logout(request: Request, response: Response):
+  sid = request.cookies.get(auth.COOKIE_NAME)
+  if sid:
+    auth.destroy_session(sid)
+  response.delete_cookie(auth.COOKIE_NAME)
+  return {"ok": True}
+
+
+@app.get("/api/me")
+def api_me(user: User = Depends(auth.get_current_user)):
+  return auth.user_dict(user)
+
+
+# ===== HTML pages (all require login -> redirect to /login) =====
+def _ensure_logged_in(request: Request):
+  sid = request.cookies.get(auth.COOKIE_NAME)
+  if not sid or auth.get_user_id_from_session(sid) is None:
+    return RedirectResponse(url="/login", status_code=302)
+  return None
+
+
 @app.get("/", response_class=HTMLResponse)
 def overview_page(request: Request):
+  r = _ensure_logged_in(request)
+  if r is not None:
+    return r
   return templates.TemplateResponse(request, "overview.html", {"active_tab": "overview"})
 
 
 @app.get("/analytics", response_class=HTMLResponse)
 def analytics_page(request: Request):
+  r = _ensure_logged_in(request)
+  if r is not None:
+    return r
   return templates.TemplateResponse(request, "analytics.html", {"active_tab": "analytics"})
 
 
 @app.get("/alerts", response_class=HTMLResponse)
 def alerts_page(request: Request):
+  r = _ensure_logged_in(request)
+  if r is not None:
+    return r
   return templates.TemplateResponse(request, "alerts.html", {"active_tab": "alerts"})
 
 
 @app.get("/history", response_class=HTMLResponse)
 def history_page(request: Request):
+  r = _ensure_logged_in(request)
+  if r is not None:
+    return r
   return templates.TemplateResponse(request, "history.html", {"active_tab": "history"})
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_page(request: Request):
+  r = _ensure_logged_in(request)
+  if r is not None:
+    return r
+  return templates.TemplateResponse(request, "admin.html", {"active_tab": "admin"})
 
 
 # ===== Classes / Subjects =====
 @app.get("/api/classes")
-def list_classes(db: Session = Depends(get_session)):
+def list_classes(
+  user: User = Depends(auth.get_current_user),
+  db: Session = Depends(get_session),
+):
   classes = db.query(SchoolClass).order_by(SchoolClass.id).all()
+  # Pedagog only sees their own class
+  if user.role == "pedagog":
+    classes = [c for c in classes if c.id == user.class_id]
   return [
     {"id": c.id, "name": c.name, "student_count": len(c.students)}
     for c in classes
@@ -165,26 +210,35 @@ def list_classes(db: Session = Depends(get_session)):
 
 
 @app.get("/api/subjects")
-def list_subjects(db: Session = Depends(get_session)):
+def list_subjects(
+  user: User = Depends(auth.get_current_user),
+  db: Session = Depends(get_session),
+):
   subjects = db.query(Subject).order_by(Subject.name).all()
   return [{"id": s.id, "name": s.name} for s in subjects]
 
 
 # ===== Students =====
 @app.get("/api/students")
-def list_students(class_id: int = None, db: Session = Depends(get_session)):
+def list_students(
+  class_id: int = None,
+  user: User = Depends(auth.get_current_user),
+  db: Session = Depends(get_session),
+):
   q = db.query(Student)
-  if class_id is not None:
+  if user.role == "pedagog":
+    q = q.filter(Student.class_id == user.class_id)
+  elif class_id is not None:
     q = q.filter(Student.class_id == class_id)
   out = []
   for s in q.order_by(Student.full_name).all():
     out.append({
-      "id": s.id,
-      "full_name": s.full_name,
-      "class_id": s.class_id,
-      "class_name": s.school_class.name if s.school_class else "",
-      "photo_url": "/students_photos/" + os.path.basename(s.photo_path),
-      "created_at": s.created_at.isoformat() if s.created_at else None,
+        "id": s.id,
+        "full_name": s.full_name,
+        "class_id": s.class_id,
+        "class_name": s.school_class.name if s.school_class else "",
+        "photo_url": "/students_photos/" + os.path.basename(s.photo_path),
+        "created_at": s.created_at.isoformat() if s.created_at else None,
     })
   return out
 
@@ -194,9 +248,15 @@ async def register_student(
   full_name: str = Form(...),
   class_id: int = Form(...),
   photo: UploadFile = File(...),
+  user: User = Depends(auth.get_current_user),
   db: Session = Depends(get_session),
 ):
   import cv2
+
+  if not auth.can_modify(user):
+    raise HTTPException(status_code=403, detail="Окуу гана уруксат")
+  if user.role == "pedagog" and user.class_id != class_id:
+    raise HTTPException(status_code=403, detail="Сиздин классыңыз эмес")
 
   print("[register_student] full_name=" + repr(full_name)
         + " class_id=" + str(class_id)
@@ -273,13 +333,21 @@ async def register_student(
 
 
 @app.delete("/api/students/{student_id}")
-def delete_student(student_id: int, db: Session = Depends(get_session)):
+def delete_student(
+  student_id: int,
+  user: User = Depends(auth.get_current_user),
+  db: Session = Depends(get_session),
+):
+  if not auth.can_modify(user):
+    raise HTTPException(status_code=403, detail="Окуу гана уруксат")
   student = db.query(Student).filter(Student.id == student_id).first()
   if student is None:
     raise HTTPException(status_code=404, detail="Окуучу табылган жок")
+  if user.role == "pedagog" and student.class_id != user.class_id:
+    raise HTTPException(status_code=403, detail="Сиздин классыңыз эмес")
   try:
     if student.photo_path and os.path.exists(student.photo_path):
-      os.remove(student.photo_path)
+        os.remove(student.photo_path)
   except Exception:
     pass
   db.delete(student)
@@ -288,51 +356,76 @@ def delete_student(student_id: int, db: Session = Depends(get_session)):
 
 
 # ===== Lessons =====
+def _filter_lessons_by_role(q, user):
+  if user.role == "pedagog":
+    q = q.filter(Lesson.class_id == user.class_id)
+  return q
+
+
 @app.get("/api/lessons/active")
-def active_lessons(db: Session = Depends(get_session)):
-  lessons = db.query(Lesson).filter(Lesson.is_active == True).order_by(Lesson.started_at.desc()).all()
+def active_lessons(
+  user: User = Depends(auth.get_current_user),
+  db: Session = Depends(get_session),
+):
+  q = db.query(Lesson).filter(Lesson.is_active == True)
+  q = _filter_lessons_by_role(q, user)
+  lessons = q.order_by(Lesson.started_at.desc()).all()
   out = []
   for l in lessons:
     out.append({
-      "id": l.id,
-      "subject_name": l.subject.name if l.subject else "",
-      "class_name": l.school_class.name if l.school_class else "",
-      "started_at": l.started_at.isoformat() if l.started_at else None,
-      "students_in_class": len(l.school_class.students) if l.school_class else 0,
-      "students_seen": db.query(Attendance).filter(Attendance.lesson_id == l.id).count(),
-      "camera_id": l.camera_id,
-      "worker_running": recognizer_worker.is_worker_running(l.id),
+        "id": l.id,
+        "subject_name": l.subject.name if l.subject else "",
+        "class_name": l.school_class.name if l.school_class else "",
+        "started_at": l.started_at.isoformat() if l.started_at else None,
+        "students_in_class": len(l.school_class.students) if l.school_class else 0,
+        "students_seen": db.query(Attendance).filter(Attendance.lesson_id == l.id).count(),
+        "camera_id": l.camera_id,
+        "worker_running": recognizer_worker.is_worker_running(l.id),
+        "auto_started": l.auto_started,
     })
   return out
 
 
 @app.get("/api/lessons/history")
-def history_lessons(db: Session = Depends(get_session)):
-  lessons = db.query(Lesson).filter(Lesson.is_active == False).order_by(Lesson.ended_at.desc()).limit(100).all()
+def history_lessons(
+  user: User = Depends(auth.get_current_user),
+  db: Session = Depends(get_session),
+):
+  q = db.query(Lesson).filter(Lesson.is_active == False)
+  q = _filter_lessons_by_role(q, user)
+  lessons = q.order_by(Lesson.ended_at.desc()).limit(100).all()
   out = []
   for l in lessons:
     duration = None
     if l.started_at and l.ended_at:
-      duration = int((l.ended_at - l.started_at).total_seconds())
+        duration = int((l.ended_at - l.started_at).total_seconds())
     out.append({
-      "id": l.id,
-      "subject_name": l.subject.name if l.subject else "",
-      "class_name": l.school_class.name if l.school_class else "",
-      "started_at": l.started_at.isoformat() if l.started_at else None,
-      "ended_at": l.ended_at.isoformat() if l.ended_at else None,
-      "duration_seconds": duration,
-      "students_count": db.query(Attendance).filter(Attendance.lesson_id == l.id).count(),
-      "alerts_count": db.query(Alert).filter(Alert.lesson_id == l.id).count(),
+        "id": l.id,
+        "subject_name": l.subject.name if l.subject else "",
+        "class_name": l.school_class.name if l.school_class else "",
+        "started_at": l.started_at.isoformat() if l.started_at else None,
+        "ended_at": l.ended_at.isoformat() if l.ended_at else None,
+        "duration_seconds": duration,
+        "students_count": db.query(Attendance).filter(Attendance.lesson_id == l.id).count(),
+        "alerts_count": db.query(Alert).filter(Alert.lesson_id == l.id).count(),
     })
   return out
 
 
 @app.post("/api/lessons/start")
-async def start_lesson(payload: dict, db: Session = Depends(get_session)):
+async def start_lesson(
+  payload: dict,
+  user: User = Depends(auth.get_current_user),
+  db: Session = Depends(get_session),
+):
+  if not auth.can_modify(user):
+    raise HTTPException(status_code=403, detail="Окуу гана уруксат")
   subject_id = payload.get("subject_id")
   class_id = payload.get("class_id")
   if not subject_id or not class_id:
     raise HTTPException(status_code=400, detail="subject_id жана class_id керек")
+  if user.role == "pedagog" and user.class_id != class_id:
+    raise HTTPException(status_code=403, detail="Сиздин классыңыз эмес")
 
   subject = db.query(Subject).filter(Subject.id == subject_id).first()
   school_class = db.query(SchoolClass).filter(SchoolClass.id == class_id).first()
@@ -351,6 +444,7 @@ async def start_lesson(payload: dict, db: Session = Depends(get_session)):
     camera_id="cam-1",
     started_at=datetime.utcnow(),
     is_active=True,
+    auto_started=False,
   )
   db.add(lesson)
   db.commit()
@@ -367,10 +461,18 @@ async def start_lesson(payload: dict, db: Session = Depends(get_session)):
 
 
 @app.post("/api/lessons/{lesson_id}/stop")
-def stop_lesson(lesson_id: int, db: Session = Depends(get_session)):
+def stop_lesson(
+  lesson_id: int,
+  user: User = Depends(auth.get_current_user),
+  db: Session = Depends(get_session),
+):
+  if not auth.can_modify(user):
+    raise HTTPException(status_code=403, detail="Окуу гана уруксат")
   lesson = db.query(Lesson).filter(Lesson.id == lesson_id).first()
   if lesson is None:
     raise HTTPException(status_code=404, detail="Сабак табылган жок")
+  if user.role == "pedagog" and lesson.class_id != user.class_id:
+    raise HTTPException(status_code=403, detail="Сиздин классыңыз эмес")
   recognizer_worker.stop_worker(lesson_id)
   if lesson.is_active:
     lesson.is_active = False
@@ -383,23 +485,41 @@ def stop_lesson(lesson_id: int, db: Session = Depends(get_session)):
 
 
 @app.get("/api/lessons/{lesson_id}/attendees")
-def lesson_attendees(lesson_id: int, db: Session = Depends(get_session)):
+def lesson_attendees(
+  lesson_id: int,
+  user: User = Depends(auth.get_current_user),
+  db: Session = Depends(get_session),
+):
+  lesson = db.query(Lesson).filter(Lesson.id == lesson_id).first()
+  if lesson is None:
+    raise HTTPException(status_code=404, detail="Сабак табылган жок")
+  if user.role == "pedagog" and lesson.class_id != user.class_id:
+    raise HTTPException(status_code=403, detail="Сиздин классыңыз эмес")
   rows = db.query(Attendance).filter(Attendance.lesson_id == lesson_id).all()
   out = []
   for a in rows:
     st = a.student
     out.append({
-      "student_id": a.student_id,
-      "student_name": st.full_name if st else "?",
-      "photo_url": ("/students_photos/" + os.path.basename(st.photo_path)) if st and st.photo_path else None,
-      "entered_at": a.entered_at.isoformat() if a.entered_at else None,
-      "left_at": a.left_at.isoformat() if a.left_at else None,
+        "student_id": a.student_id,
+        "student_name": st.full_name if st else "?",
+        "photo_url": ("/students_photos/" + os.path.basename(st.photo_path)) if st and st.photo_path else None,
+        "entered_at": a.entered_at.isoformat() if a.entered_at else None,
+        "left_at": a.left_at.isoformat() if a.left_at else None,
     })
   return out
 
 
 @app.get("/api/lessons/{lesson_id}/emotions")
-def lesson_emotions(lesson_id: int, db: Session = Depends(get_session)):
+def lesson_emotions(
+  lesson_id: int,
+  user: User = Depends(auth.get_current_user),
+  db: Session = Depends(get_session),
+):
+  lesson = db.query(Lesson).filter(Lesson.id == lesson_id).first()
+  if lesson is None:
+    raise HTTPException(status_code=404, detail="Сабак табылган жок")
+  if user.role == "pedagog" and lesson.class_id != user.class_id:
+    raise HTTPException(status_code=403, detail="Сиздин классыңыз эмес")
   rows = db.query(
     EmotionLog.emotion, func.count(EmotionLog.id)
   ).filter(EmotionLog.lesson_id == lesson_id).group_by(EmotionLog.emotion).all()
@@ -407,10 +527,16 @@ def lesson_emotions(lesson_id: int, db: Session = Depends(get_session)):
 
 
 @app.get("/api/lessons/{lesson_id}/detail")
-def lesson_detail(lesson_id: int, db: Session = Depends(get_session)):
+def lesson_detail(
+  lesson_id: int,
+  user: User = Depends(auth.get_current_user),
+  db: Session = Depends(get_session),
+):
   l = db.query(Lesson).filter(Lesson.id == lesson_id).first()
   if l is None:
     raise HTTPException(status_code=404, detail="Сабак табылган жок")
+  if user.role == "pedagog" and l.class_id != user.class_id:
+    raise HTTPException(status_code=403, detail="Сиздин классыңыз эмес")
   duration = None
   if l.started_at and l.ended_at:
     duration = int((l.ended_at - l.started_at).total_seconds())
@@ -421,11 +547,11 @@ def lesson_detail(lesson_id: int, db: Session = Depends(get_session)):
   for a in db.query(Attendance).filter(Attendance.lesson_id == l.id).all():
     st = a.student
     attendees.append({
-      "student_id": a.student_id,
-      "student_name": st.full_name if st else "?",
-      "photo_url": ("/students_photos/" + os.path.basename(st.photo_path)) if st and st.photo_path else None,
-      "entered_at": a.entered_at.isoformat() if a.entered_at else None,
-      "left_at": a.left_at.isoformat() if a.left_at else None,
+        "student_id": a.student_id,
+        "student_name": st.full_name if st else "?",
+        "photo_url": ("/students_photos/" + os.path.basename(st.photo_path)) if st and st.photo_path else None,
+        "entered_at": a.entered_at.isoformat() if a.entered_at else None,
+        "left_at": a.left_at.isoformat() if a.left_at else None,
     })
 
   emo_rows = db.query(EmotionLog.emotion, func.count(EmotionLog.id))\
@@ -436,12 +562,12 @@ def lesson_detail(lesson_id: int, db: Session = Depends(get_session)):
   alerts = []
   for a in alerts_rows:
     alerts.append({
-      "id": a.id,
-      "alert_type": a.alert_type,
-      "message": a.message,
-      "status": a.status,
-      "created_at": a.created_at.isoformat() if a.created_at else None,
-      "student_name": a.student.full_name if a.student else None,
+        "id": a.id,
+        "alert_type": a.alert_type,
+        "message": a.message,
+        "status": a.status,
+        "created_at": a.created_at.isoformat() if a.created_at else None,
+        "student_name": a.student.full_name if a.student else None,
     })
 
   return {
@@ -452,6 +578,7 @@ def lesson_detail(lesson_id: int, db: Session = Depends(get_session)):
     "ended_at": l.ended_at.isoformat() if l.ended_at else None,
     "duration_seconds": duration,
     "is_active": l.is_active,
+    "auto_started": l.auto_started,
     "students_in_class": len(l.school_class.students) if l.school_class else 0,
     "attendees": attendees,
     "emotions": emotions,
@@ -461,12 +588,24 @@ def lesson_detail(lesson_id: int, db: Session = Depends(get_session)):
 
 # ===== Overview summary =====
 @app.get("/api/overview")
-def overview_stats(db: Session = Depends(get_session)):
-  total_students = db.query(Student).count()
-  total_classes = db.query(SchoolClass).count()
-  active = db.query(Lesson).filter(Lesson.is_active == True).count()
-  today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-  lessons_today = db.query(Lesson).filter(Lesson.started_at >= today_start).count()
+def overview_stats(
+  user: User = Depends(auth.get_current_user),
+  db: Session = Depends(get_session),
+):
+  if user.role == "pedagog":
+    total_students = db.query(Student).filter(Student.class_id == user.class_id).count()
+    total_classes = 1
+    active = db.query(Lesson).filter(Lesson.is_active == True, Lesson.class_id == user.class_id).count()
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    lessons_today = db.query(Lesson).filter(
+        Lesson.started_at >= today_start, Lesson.class_id == user.class_id,
+    ).count()
+  else:
+    total_students = db.query(Student).count()
+    total_classes = db.query(SchoolClass).count()
+    active = db.query(Lesson).filter(Lesson.is_active == True).count()
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    lessons_today = db.query(Lesson).filter(Lesson.started_at >= today_start).count()
   return {
     "total_students": total_students,
     "total_classes": total_classes,
@@ -480,6 +619,7 @@ def overview_stats(db: Session = Depends(get_session)):
 def analytics_emotions_pie(
   lesson_id: int = None,
   class_id: int = None,
+  user: User = Depends(auth.get_current_user),
   db: Session = Depends(get_session),
 ):
   q = db.query(EmotionLog.emotion, func.count(EmotionLog.id))
@@ -487,6 +627,8 @@ def analytics_emotions_pie(
     q = q.filter(EmotionLog.lesson_id == lesson_id)
   elif class_id is not None:
     q = q.join(Lesson, Lesson.id == EmotionLog.lesson_id).filter(Lesson.class_id == class_id)
+  if user.role == "pedagog":
+    q = q.join(Lesson, Lesson.id == EmotionLog.lesson_id).filter(Lesson.class_id == user.class_id)
   rows = q.group_by(EmotionLog.emotion).all()
   result = {emo: cnt for emo, cnt in rows}
   total = sum(result.values()) if result else 0
@@ -494,8 +636,8 @@ def analytics_emotions_pie(
     "counts": result,
     "total": total,
     "scope": (
-      "lesson:" + str(lesson_id) if lesson_id is not None else
-      ("class:" + str(class_id) if class_id is not None else "all")
+        "lesson:" + str(lesson_id) if lesson_id is not None else
+        ("class:" + str(class_id) if class_id is not None else "all")
     ),
   }
 
@@ -503,11 +645,14 @@ def analytics_emotions_pie(
 @app.get("/api/analytics/emotions_timeline")
 def analytics_emotions_timeline(
   lesson_id: int,
+  user: User = Depends(auth.get_current_user),
   db: Session = Depends(get_session),
 ):
   lesson = db.query(Lesson).filter(Lesson.id == lesson_id).first()
   if lesson is None:
     raise HTTPException(status_code=404, detail="Сабак табылган жок")
+  if user.role == "pedagog" and lesson.class_id != user.class_id:
+    raise HTTPException(status_code=403, detail="Сиздин классыңыз эмес")
   start = lesson.started_at
   logs = db.query(EmotionLog).filter(EmotionLog.lesson_id == lesson_id).order_by(EmotionLog.timestamp).all()
   buckets = {}
@@ -515,9 +660,9 @@ def analytics_emotions_timeline(
     delta = log.timestamp - start
     minute = int(delta.total_seconds() // 60)
     if minute < 0:
-      minute = 0
+        minute = 0
     if minute not in buckets:
-      buckets[minute] = {}
+        buckets[minute] = {}
     buckets[minute][log.emotion] = buckets[minute].get(log.emotion, 0) + 1
   series = []
   for m in sorted(buckets.keys()):
@@ -532,33 +677,36 @@ def analytics_emotions_timeline(
 @app.get("/api/analytics/attendance_by_class")
 def analytics_attendance_by_class(
   days: int = 30,
+  user: User = Depends(auth.get_current_user),
   db: Session = Depends(get_session),
 ):
   since = datetime.utcnow() - timedelta(days=days)
   classes = db.query(SchoolClass).order_by(SchoolClass.id).all()
+  if user.role == "pedagog":
+    classes = [c for c in classes if c.id == user.class_id]
   out = []
   for c in classes:
     lessons = db.query(Lesson).filter(
-      Lesson.class_id == c.id,
-      Lesson.started_at >= since,
+        Lesson.class_id == c.id,
+        Lesson.started_at >= since,
     ).all()
     if not lessons:
-      continue
+        continue
     total_students = len(c.students)
     if total_students == 0:
-      continue
+        continue
     total_seen = 0
     for l in lessons:
-      seen = db.query(Attendance).filter(Attendance.lesson_id == l.id).count()
-      total_seen += seen
+        seen = db.query(Attendance).filter(Attendance.lesson_id == l.id).count()
+        total_seen += seen
     avg_seen = total_seen / len(lessons)
     pct = round((avg_seen / total_students) * 100, 1) if total_students > 0 else 0
     out.append({
-      "class_id": c.id,
-      "class_name": c.name,
-      "total_students": total_students,
-      "lessons_count": len(lessons),
-      "avg_attendance_pct": pct,
+        "class_id": c.id,
+        "class_name": c.name,
+        "total_students": total_students,
+        "lessons_count": len(lessons),
+        "avg_attendance_pct": pct,
     })
   return {"days": days, "rows": out}
 
@@ -566,10 +714,13 @@ def analytics_attendance_by_class(
 @app.get("/api/analytics/student_summary")
 def analytics_student_summary(
   class_id: int = None,
+  user: User = Depends(auth.get_current_user),
   db: Session = Depends(get_session),
 ):
   q = db.query(Student)
-  if class_id is not None:
+  if user.role == "pedagog":
+    q = q.filter(Student.class_id == user.class_id)
+  elif class_id is not None:
     q = q.filter(Student.class_id == class_id)
   students = q.order_by(Student.full_name).all()
   NEG = {"sad", "angry", "fear", "disgust"}
@@ -577,7 +728,7 @@ def analytics_student_summary(
   for s in students:
     lessons_seen = db.query(Attendance).filter(Attendance.student_id == s.id).count()
     emo_rows = db.query(
-      EmotionLog.emotion, func.count(EmotionLog.id)
+        EmotionLog.emotion, func.count(EmotionLog.id)
     ).filter(EmotionLog.student_id == s.id).group_by(EmotionLog.emotion).all()
     emo_counts = {emo: cnt for emo, cnt in emo_rows}
     total_emo = sum(emo_counts.values())
@@ -585,13 +736,13 @@ def analytics_student_summary(
     neg_total = sum(v for k, v in emo_counts.items() if k in NEG)
     neg_pct = round((neg_total / total_emo) * 100, 1) if total_emo > 0 else 0.0
     out.append({
-      "student_id": s.id,
-      "student_name": s.full_name,
-      "class_name": s.school_class.name if s.school_class else "",
-      "lessons_seen": lessons_seen,
-      "dominant_emotion": dominant,
-      "negative_pct": neg_pct,
-      "emotion_counts": emo_counts,
+        "student_id": s.id,
+        "student_name": s.full_name,
+        "class_name": s.school_class.name if s.school_class else "",
+        "lessons_seen": lessons_seen,
+        "dominant_emotion": dominant,
+        "negative_pct": neg_pct,
+        "emotion_counts": emo_counts,
     })
   return {"rows": out}
 
@@ -611,21 +762,27 @@ def _serialize_alert(a, db):
     "created_at": a.created_at.isoformat() if a.created_at else None,
     "lesson_id": a.lesson_id,
     "lesson_label": (
-      ((lesson.subject.name if lesson.subject else "?") + " · "
-       + (lesson.school_class.name if lesson.school_class else "?"))
-      if lesson else None
+        ((lesson.subject.name if lesson.subject else "?") + " · "
+         + (lesson.school_class.name if lesson.school_class else "?"))
+        if lesson else None
     ),
     "student_id": a.student_id,
     "student_name": student.full_name if student else None,
     "student_photo": (
-      "/students_photos/" + os.path.basename(student.photo_path)
-      if student and student.photo_path else None
+        "/students_photos/" + os.path.basename(student.photo_path)
+        if student and student.photo_path else None
     ),
     "class_name": (
-      student.school_class.name if student and student.school_class else
-      (lesson.school_class.name if lesson and lesson.school_class else "")
+        student.school_class.name if student and student.school_class else
+        (lesson.school_class.name if lesson and lesson.school_class else "")
     ),
   }
+
+
+def _filter_alerts_by_role(q, user):
+  if user.role == "pedagog":
+    q = q.join(Lesson, Lesson.id == Alert.lesson_id).filter(Lesson.class_id == user.class_id)
+  return q
 
 
 @app.get("/api/alerts")
@@ -635,9 +792,11 @@ def list_alerts(
   lesson_id: int = None,
   student_id: int = None,
   limit: int = 200,
+  user: User = Depends(auth.get_current_user),
   db: Session = Depends(get_session),
 ):
   q = db.query(Alert)
+  q = _filter_alerts_by_role(q, user)
   if status:
     q = q.filter(Alert.status == status)
   if alert_type:
@@ -651,13 +810,23 @@ def list_alerts(
 
 
 @app.get("/api/alerts/stats")
-def alerts_stats(db: Session = Depends(get_session)):
-  by_status_rows = db.query(Alert.status, func.count(Alert.id)).group_by(Alert.status).all()
-  by_type_rows = db.query(Alert.alert_type, func.count(Alert.id)).group_by(Alert.alert_type).all()
+def alerts_stats(
+  user: User = Depends(auth.get_current_user),
+  db: Session = Depends(get_session),
+):
+  q_all = _filter_alerts_by_role(db.query(Alert), user)
+  by_status_rows = _filter_alerts_by_role(
+    db.query(Alert.status, func.count(Alert.id)), user
+  ).group_by(Alert.status).all()
+  by_type_rows = _filter_alerts_by_role(
+    db.query(Alert.alert_type, func.count(Alert.id)), user
+  ).group_by(Alert.alert_type).all()
   today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-  today_count = db.query(Alert).filter(Alert.created_at >= today_start).count()
+  today_count = _filter_alerts_by_role(
+    db.query(Alert), user
+  ).filter(Alert.created_at >= today_start).count()
   return {
-    "total": db.query(Alert).count(),
+    "total": q_all.count(),
     "today": today_count,
     "by_status": {s: c for s, c in by_status_rows},
     "by_type": {t: c for t, c in by_type_rows},
@@ -665,10 +834,19 @@ def alerts_stats(db: Session = Depends(get_session)):
 
 
 @app.patch("/api/alerts/{alert_id}")
-async def update_alert(alert_id: int, payload: dict, db: Session = Depends(get_session)):
+async def update_alert(
+  alert_id: int,
+  payload: dict,
+  user: User = Depends(auth.get_current_user),
+  db: Session = Depends(get_session),
+):
+  if not auth.can_modify(user):
+    raise HTTPException(status_code=403, detail="Окуу гана уруксат")
   a = db.query(Alert).filter(Alert.id == alert_id).first()
   if a is None:
     raise HTTPException(status_code=404, detail="Эскертүү табылган жок")
+  if user.role == "pedagog" and a.lesson and a.lesson.class_id != user.class_id:
+    raise HTTPException(status_code=403, detail="Сиздин классыңыз эмес")
   new_status = payload.get("status")
   if new_status not in ALLOWED_ALERT_STATUSES:
     raise HTTPException(status_code=400, detail="status must be one of: " + ", ".join(ALLOWED_ALERT_STATUSES))
@@ -677,26 +855,38 @@ async def update_alert(alert_id: int, payload: dict, db: Session = Depends(get_s
   db.refresh(a)
   if event_queue is not None:
     try:
-      event_queue.put_nowait({"type": "alert_updated", "alert": _serialize_alert(a, db)})
+        event_queue.put_nowait({"type": "alert_updated", "alert": _serialize_alert(a, db)})
     except Exception:
-      pass
+        pass
   return _serialize_alert(a, db)
 
 
 @app.post("/api/alerts/mark_all_seen")
-async def mark_all_seen(db: Session = Depends(get_session)):
-  count = db.query(Alert).filter(Alert.status == "new").update({Alert.status: "seen"})
+async def mark_all_seen(
+  user: User = Depends(auth.get_current_user),
+  db: Session = Depends(get_session),
+):
+  if not auth.can_modify(user):
+    raise HTTPException(status_code=403, detail="Окуу гана уруксат")
+  q = db.query(Alert).filter(Alert.status == "new")
+  if user.role == "pedagog":
+    q = q.join(Lesson, Lesson.id == Alert.lesson_id).filter(Lesson.class_id == user.class_id)
+  count = q.update({Alert.status: "seen"}, synchronize_session=False)
   db.commit()
   if event_queue is not None:
     try:
-      event_queue.put_nowait({"type": "alerts_bulk_update", "count": count, "new_status": "seen"})
+        event_queue.put_nowait({"type": "alerts_bulk_update", "count": count, "new_status": "seen"})
     except Exception:
-      pass
+        pass
   return {"ok": True, "updated": count}
 
 
 @app.delete("/api/alerts/{alert_id}")
-def delete_alert(alert_id: int, db: Session = Depends(get_session)):
+def delete_alert(
+  alert_id: int,
+  user: User = Depends(auth.require_admin),
+  db: Session = Depends(get_session),
+):
   a = db.query(Alert).filter(Alert.id == alert_id).first()
   if a is None:
     raise HTTPException(status_code=404, detail="Эскертүү табылган жок")
@@ -706,7 +896,11 @@ def delete_alert(alert_id: int, db: Session = Depends(get_session)):
 
 
 @app.delete("/api/alerts")
-def delete_alerts_bulk(status: str = None, db: Session = Depends(get_session)):
+def delete_alerts_bulk(
+  status: str = None,
+  user: User = Depends(auth.require_admin),
+  db: Session = Depends(get_session),
+):
   q = db.query(Alert)
   if status:
     q = q.filter(Alert.status == status)
@@ -722,10 +916,10 @@ def _parse_iso_date(s, end_of_day=False):
     return None
   try:
     if len(s) == 10:
-      dt = datetime.strptime(s, "%Y-%m-%d")
-      if end_of_day:
-        dt = dt.replace(hour=23, minute=59, second=59)
-      return dt
+        dt = datetime.strptime(s, "%Y-%m-%d")
+        if end_of_day:
+            dt = dt.replace(hour=23, minute=59, second=59)
+        return dt
     return datetime.fromisoformat(s.replace("Z", ""))
   except Exception:
     return None
@@ -738,10 +932,13 @@ def history_lessons_filtered(
   date_from: str = None,
   date_to: str = None,
   limit: int = 200,
+  user: User = Depends(auth.get_current_user),
   db: Session = Depends(get_session),
 ):
   q = db.query(Lesson).filter(Lesson.is_active == False)
-  if class_id is not None:
+  if user.role == "pedagog":
+    q = q.filter(Lesson.class_id == user.class_id)
+  elif class_id is not None:
     q = q.filter(Lesson.class_id == class_id)
   if subject_id is not None:
     q = q.filter(Lesson.subject_id == subject_id)
@@ -757,23 +954,23 @@ def history_lessons_filtered(
   for l in lessons:
     duration = None
     if l.started_at and l.ended_at:
-      duration = int((l.ended_at - l.started_at).total_seconds())
+        duration = int((l.ended_at - l.started_at).total_seconds())
     students_count = db.query(Attendance).filter(Attendance.lesson_id == l.id).count()
     alerts_count = db.query(Alert).filter(Alert.lesson_id == l.id).count()
     emo_total = db.query(func.count(EmotionLog.id)).filter(EmotionLog.lesson_id == l.id).scalar() or 0
     out.append({
-      "id": l.id,
-      "subject_id": l.subject_id,
-      "subject_name": l.subject.name if l.subject else "",
-      "class_id": l.class_id,
-      "class_name": l.school_class.name if l.school_class else "",
-      "started_at": l.started_at.isoformat() if l.started_at else None,
-      "ended_at": l.ended_at.isoformat() if l.ended_at else None,
-      "duration_seconds": duration,
-      "students_count": students_count,
-      "students_in_class": len(l.school_class.students) if l.school_class else 0,
-      "alerts_count": alerts_count,
-      "emotion_samples": emo_total,
+        "id": l.id,
+        "subject_id": l.subject_id,
+        "subject_name": l.subject.name if l.subject else "",
+        "class_id": l.class_id,
+        "class_name": l.school_class.name if l.school_class else "",
+        "started_at": l.started_at.isoformat() if l.started_at else None,
+        "ended_at": l.ended_at.isoformat() if l.ended_at else None,
+        "duration_seconds": duration,
+        "students_count": students_count,
+        "students_in_class": len(l.school_class.students) if l.school_class else 0,
+        "alerts_count": alerts_count,
+        "emotion_samples": emo_total,
     })
   return out
 
@@ -784,10 +981,13 @@ def history_stats(
   subject_id: int = None,
   date_from: str = None,
   date_to: str = None,
+  user: User = Depends(auth.get_current_user),
   db: Session = Depends(get_session),
 ):
   q = db.query(Lesson).filter(Lesson.is_active == False)
-  if class_id is not None:
+  if user.role == "pedagog":
+    q = q.filter(Lesson.class_id == user.class_id)
+  elif class_id is not None:
     q = q.filter(Lesson.class_id == class_id)
   if subject_id is not None:
     q = q.filter(Lesson.subject_id == subject_id)
@@ -805,7 +1005,7 @@ def history_stats(
   total_alerts = 0
   for l in lessons:
     if l.started_at and l.ended_at:
-      total_duration_sec += int((l.ended_at - l.started_at).total_seconds())
+        total_duration_sec += int((l.ended_at - l.started_at).total_seconds())
     total_attendance += db.query(Attendance).filter(Attendance.lesson_id == l.id).count()
     total_alerts += db.query(Alert).filter(Alert.lesson_id == l.id).count()
   avg_duration_min = round(total_duration_sec / 60 / total_lessons, 1) if total_lessons else 0
@@ -822,28 +1022,33 @@ def history_stats(
 
 # ===== PDF export (per lesson) =====
 @app.get("/api/lessons/{lesson_id}/pdf")
-def lesson_pdf(lesson_id: int, db: Session = Depends(get_session)):
+def lesson_pdf(
+  lesson_id: int,
+  user: User = Depends(auth.get_current_user),
+  db: Session = Depends(get_session),
+):
   try:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import cm
     from reportlab.platypus import (
-      SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak,
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak,
     )
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
   except ImportError:
     raise HTTPException(
-      status_code=500,
-      detail="reportlab орнотулган эмес. 'pip install reportlab' аткарыңыз",
+        status_code=500,
+        detail="reportlab орнотулган эмес. 'pip install reportlab' аткарыңыз",
     )
 
   l = db.query(Lesson).filter(Lesson.id == lesson_id).first()
   if l is None:
     raise HTTPException(status_code=404, detail="Сабак табылган жок")
+  if user.role == "pedagog" and l.class_id != user.class_id:
+    raise HTTPException(status_code=403, detail="Сиздин классыңыз эмес")
 
-  # Try to register a Unicode TTF (DejaVu Sans is bundled on most systems).
   font_name = "Helvetica"
   font_bold = "Helvetica-Bold"
   for candidate in [
@@ -853,13 +1058,13 @@ def lesson_pdf(lesson_id: int, db: Session = Depends(get_session)):
     "/Library/Fonts/Arial.ttf",
   ]:
     if os.path.exists(candidate):
-      try:
-        pdfmetrics.registerFont(TTFont("AppFont", candidate))
-        font_name = "AppFont"
-        font_bold = "AppFont"
-        break
-      except Exception:
-        pass
+        try:
+            pdfmetrics.registerFont(TTFont("AppFont", candidate))
+            font_name = "AppFont"
+            font_bold = "AppFont"
+            break
+        except Exception:
+            pass
 
   styles = getSampleStyleSheet()
   title_style = ParagraphStyle(
@@ -884,14 +1089,9 @@ def lesson_pdf(lesson_id: int, db: Session = Depends(get_session)):
     .order_by(Alert.created_at.desc()).all()
 
   EMO_LABEL = {
-    "happy": "Бактылуу",
-    "neutral": "Калыс",
-    "surprise": "Таң калуу",
-    "sad": "Кайгы",
-    "angry": "Ачуу",
-    "fear": "Коркуу",
-    "disgust": "Жийиркенүү",
-    "contempt": "Жек көрүү",
+    "happy": "Бактылуу", "neutral": "Калыс", "surprise": "Таң калуу",
+    "sad": "Кайгы", "angry": "Ачуу", "fear": "Коркуу",
+    "disgust": "Жийиркенүү", "contempt": "Жек көрүү",
   }
   ALERT_LABEL = {
     "negative_emotion": "Терс эмоция",
@@ -942,23 +1142,23 @@ def lesson_pdf(lesson_id: int, db: Session = Depends(get_session)):
   if attendees:
     att_data = [["№", "Окуучу", "Кирген", "Кеткен"]]
     for i, a in enumerate(attendees, 1):
-      att_data.append([
-        str(i),
-        a.student.full_name if a.student else "?",
-        a.entered_at.strftime("%H:%M:%S") if a.entered_at else "—",
-        a.left_at.strftime("%H:%M:%S") if a.left_at else "—",
-      ])
+        att_data.append([
+            str(i),
+            a.student.full_name if a.student else "?",
+            a.entered_at.strftime("%H:%M:%S") if a.entered_at else "—",
+            a.left_at.strftime("%H:%M:%S") if a.left_at else "—",
+        ])
     att_tbl = Table(att_data, colWidths=[1 * cm, 9 * cm, 3.5 * cm, 3.5 * cm])
     att_tbl.setStyle(TableStyle([
-      ("FONTNAME", (0, 0), (-1, -1), font_name),
-      ("FONTNAME", (0, 0), (-1, 0), font_bold),
-      ("FONTSIZE", (0, 0), (-1, -1), 9),
-      ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#3b82f6")),
-      ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-      ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
-      ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#e2e8f0")),
-      ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
-      ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTNAME", (0, 0), (-1, 0), font_bold),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#3b82f6")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#e2e8f0")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]))
     story.append(att_tbl)
   else:
@@ -970,18 +1170,18 @@ def lesson_pdf(lesson_id: int, db: Session = Depends(get_session)):
   if total_emo > 0:
     emo_data = [["Эмоция", "Жолуккан", "Үлүшү"]]
     for emo, cnt in sorted(emotions.items(), key=lambda x: -x[1]):
-      pct = round(cnt / total_emo * 100, 1)
-      emo_data.append([EMO_LABEL.get(emo, emo), str(cnt), str(pct) + "%"])
+        pct = round(cnt / total_emo * 100, 1)
+        emo_data.append([EMO_LABEL.get(emo, emo), str(cnt), str(pct) + "%"])
     emo_tbl = Table(emo_data, colWidths=[7 * cm, 5 * cm, 5 * cm])
     emo_tbl.setStyle(TableStyle([
-      ("FONTNAME", (0, 0), (-1, -1), font_name),
-      ("FONTNAME", (0, 0), (-1, 0), font_bold),
-      ("FONTSIZE", (0, 0), (-1, -1), 9),
-      ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#10b981")),
-      ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-      ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
-      ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#e2e8f0")),
-      ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTNAME", (0, 0), (-1, 0), font_bold),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#10b981")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#e2e8f0")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
     ]))
     story.append(emo_tbl)
   else:
@@ -992,24 +1192,24 @@ def lesson_pdf(lesson_id: int, db: Session = Depends(get_session)):
   if alerts_rows:
     al_data = [["Убакыт", "Окуучу", "Түрү", "Статус", "Билдирүү"]]
     for a in alerts_rows:
-      al_data.append([
-        a.created_at.strftime("%H:%M:%S") if a.created_at else "—",
-        a.student.full_name if a.student else "—",
-        ALERT_LABEL.get(a.alert_type, a.alert_type),
-        STATUS_LABEL.get(a.status, a.status),
-        (a.message or "")[:60],
-      ])
+        al_data.append([
+            a.created_at.strftime("%H:%M:%S") if a.created_at else "—",
+            a.student.full_name if a.student else "—",
+            ALERT_LABEL.get(a.alert_type, a.alert_type),
+            STATUS_LABEL.get(a.status, a.status),
+            (a.message or "")[:60],
+        ])
     al_tbl = Table(al_data, colWidths=[2.2 * cm, 4.5 * cm, 3 * cm, 2.3 * cm, 5 * cm])
     al_tbl.setStyle(TableStyle([
-      ("FONTNAME", (0, 0), (-1, -1), font_name),
-      ("FONTNAME", (0, 0), (-1, 0), font_bold),
-      ("FONTSIZE", (0, 0), (-1, -1), 8),
-      ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#ef4444")),
-      ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-      ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
-      ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#e2e8f0")),
-      ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#fef2f2")]),
-      ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTNAME", (0, 0), (-1, 0), font_bold),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#ef4444")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#e2e8f0")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#fef2f2")]),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]))
     story.append(al_tbl)
   else:
@@ -1037,6 +1237,183 @@ def lesson_pdf(lesson_id: int, db: Session = Depends(get_session)):
   )
 
 
+# ===== Users (admin only) =====
+@app.get("/api/users")
+def list_users(
+  user: User = Depends(auth.require_admin),
+  db: Session = Depends(get_session),
+):
+  users = db.query(User).order_by(User.role, User.username).all()
+  return [auth.user_dict(u) for u in users]
+
+
+@app.post("/api/users")
+def create_user(
+  payload: dict,
+  user: User = Depends(auth.require_admin),
+  db: Session = Depends(get_session),
+):
+  username = (payload.get("username") or "").strip()
+  password = payload.get("password") or ""
+  full_name = (payload.get("full_name") or "").strip()
+  role = payload.get("role")
+  class_id = payload.get("class_id")
+  if not username or not password or not full_name or role not in ("admin", "pedagog", "director"):
+    raise HTTPException(status_code=400, detail="Талаалар толтурулган эмес")
+  if role == "pedagog" and not class_id:
+    raise HTTPException(status_code=400, detail="Мугалимге класс керек")
+  if db.query(User).filter(User.username == username).first():
+    raise HTTPException(status_code=400, detail="Бул логин мурда катталган")
+  u = User(
+    username=username,
+    full_name=full_name,
+    role=role,
+    class_id=class_id if role == "pedagog" else None,
+  )
+  u.set_password(password)
+  db.add(u)
+  db.commit()
+  db.refresh(u)
+  return auth.user_dict(u)
+
+
+@app.patch("/api/users/{user_id}")
+def update_user(
+  user_id: int,
+  payload: dict,
+  user: User = Depends(auth.require_admin),
+  db: Session = Depends(get_session),
+):
+  u = db.query(User).filter(User.id == user_id).first()
+  if u is None:
+    raise HTTPException(status_code=404, detail="Колдонуучу табылган жок")
+  if "full_name" in payload:
+    u.full_name = payload["full_name"]
+  if "role" in payload and payload["role"] in ("admin", "pedagog", "director"):
+    u.role = payload["role"]
+    if u.role != "pedagog":
+        u.class_id = None
+  if "class_id" in payload:
+    u.class_id = payload["class_id"]
+  if payload.get("password"):
+    u.set_password(payload["password"])
+  db.commit()
+  db.refresh(u)
+  return auth.user_dict(u)
+
+
+@app.delete("/api/users/{user_id}")
+def delete_user(
+  user_id: int,
+  user: User = Depends(auth.require_admin),
+  db: Session = Depends(get_session),
+):
+  if user_id == user.id:
+    raise HTTPException(status_code=400, detail="Өзүңүздү өчүрө албайсыз")
+  u = db.query(User).filter(User.id == user_id).first()
+  if u is None:
+    raise HTTPException(status_code=404, detail="Колдонуучу табылган жок")
+  db.delete(u)
+  db.commit()
+  return {"ok": True}
+
+
+# ===== Schedule (admin only) =====
+DOW_LABEL = {0: "Дүйшөмбү", 1: "Шейшемби", 2: "Шаршемби", 3: "Бейшемби",
+             4: "Жума", 5: "Ишемби", 6: "Жекшемби"}
+
+
+def _serialize_schedule(s):
+  return {
+    "id": s.id,
+    "subject_id": s.subject_id,
+    "subject_name": s.subject.name if s.subject else "",
+    "class_id": s.class_id,
+    "class_name": s.school_class.name if s.school_class else "",
+    "day_of_week": s.day_of_week,
+    "day_label": DOW_LABEL.get(s.day_of_week, "?"),
+    "start_time": s.start_time,
+    "end_time": s.end_time,
+    "enabled": s.enabled,
+  }
+
+
+@app.get("/api/schedule")
+def list_schedule(
+  user: User = Depends(auth.get_current_user),
+  db: Session = Depends(get_session),
+):
+  q = db.query(Schedule)
+  if user.role == "pedagog":
+    q = q.filter(Schedule.class_id == user.class_id)
+  rows = q.order_by(Schedule.day_of_week, Schedule.start_time).all()
+  return [_serialize_schedule(s) for s in rows]
+
+
+@app.post("/api/schedule")
+def create_schedule(
+  payload: dict,
+  user: User = Depends(auth.require_admin),
+  db: Session = Depends(get_session),
+):
+  subject_id = payload.get("subject_id")
+  class_id = payload.get("class_id")
+  day_of_week = payload.get("day_of_week")
+  start_time = payload.get("start_time")
+  end_time = payload.get("end_time")
+  enabled = payload.get("enabled", True)
+  if not subject_id or not class_id or day_of_week is None or not start_time or not end_time:
+    raise HTTPException(status_code=400, detail="Бардык талаалар керек")
+  if day_of_week not in range(0, 7):
+    raise HTTPException(status_code=400, detail="day_of_week 0-6")
+  s = Schedule(
+    subject_id=subject_id,
+    class_id=class_id,
+    day_of_week=day_of_week,
+    start_time=start_time,
+    end_time=end_time,
+    enabled=bool(enabled),
+  )
+  db.add(s)
+  db.commit()
+  db.refresh(s)
+  return _serialize_schedule(s)
+
+
+@app.patch("/api/schedule/{schedule_id}")
+def update_schedule(
+  schedule_id: int,
+  payload: dict,
+  user: User = Depends(auth.require_admin),
+  db: Session = Depends(get_session),
+):
+  s = db.query(Schedule).filter(Schedule.id == schedule_id).first()
+  if s is None:
+    raise HTTPException(status_code=404, detail="Жадыбал табылган жок")
+  for f in ("subject_id", "class_id", "day_of_week", "start_time", "end_time"):
+    if f in payload and payload[f] is not None:
+        setattr(s, f, payload[f])
+  if "enabled" in payload:
+    s.enabled = bool(payload["enabled"])
+  db.commit()
+  db.refresh(s)
+  return _serialize_schedule(s)
+
+
+@app.delete("/api/schedule/{schedule_id}")
+def delete_schedule(
+  schedule_id: int,
+  user: User = Depends(auth.require_admin),
+  db: Session = Depends(get_session),
+):
+  s = db.query(Schedule).filter(Schedule.id == schedule_id).first()
+  if s is None:
+    raise HTTPException(status_code=404, detail="Жадыбал табылган жок")
+  db.delete(s)
+  db.commit()
+  return {"ok": True}
+
+
 # ===== WebSocket =====
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
@@ -1045,7 +1422,7 @@ async def ws_endpoint(ws: WebSocket):
   try:
     await ws.send_json({"type": "hello", "message": "connected"})
     while True:
-      await ws.receive_text()
+        await ws.receive_text()
   except WebSocketDisconnect:
     pass
   except Exception:
