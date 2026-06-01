@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ky">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Кирүү · Мектеп таануу системасы</title>
+<script>
+if (localStorage.getItem('darkMode') === 'true') {
+    document.documentElement.classList.add('dark');
+}
+</script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config = { darkMode: 'class' };</script>
+<script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<style>
+body { font-family: 'Segoe UI', system-ui, sans-serif; }
+html.dark body { background: linear-gradient(135deg, #0f172a, #1e1b4b); color: #e2e8f0; }
+html.dark .login-card { background-color: #1e293b !important; color: #e2e8f0; }
+html.dark input { background-color: #0f172a !important; color: #e2e8f0 !important; border-color: #475569 !important; }
+</style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-blue-600 via-indigo-700 to-purple-800 flex items-center justify-center px-4">
+
+<div class="login-card bg-white rounded-2xl shadow-2xl max-w-md w-full p-8"
+ x-data="loginForm()">
+<div class="text-center mb-8">
+    <div class="text-5xl mb-3">🎓</div>
+    <h1 class="text-2xl font-bold text-slate-800">Мектеп таануу системасы</h1>
+    <p class="text-sm text-slate-500 mt-1">Системага кирүү</p>
+</div>
+
+<form @submit.prevent="login()" class="space-y-4">
+    <div>
+        <label class="block text-sm font-medium text-slate-700 mb-1">Логин</label>
+        <input type="text" x-model="username" required autofocus
+               class="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+               placeholder="admin" />
+    </div>
+    <div>
+        <label class="block text-sm font-medium text-slate-700 mb-1">Пароль</label>
+        <input type="password" x-model="password" required
+               class="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+               placeholder="••••••••" />
+    </div>
+
+    <div x-show="error" x-transition
+         class="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2 rounded-lg"
+         x-text="error"></div>
+
+    <button type="submit"
+            :disabled="loading"
+            class="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-semibold py-2.5 rounded-lg transition disabled:opacity-50">
+        <span x-show="!loading">Кирүү</span>
+        <span x-show="loading">Күтүңүз...</span>
+    </button>
+</form>
+
+<div class="mt-6 text-xs text-slate-400 text-center">
+    <div class="border-t border-slate-200 pt-4">
+        <p class="font-semibold mb-1">Сыноо аккаунттар:</p>
+        <p>admin / admin123</p>
+        <p>director / director123</p>
+        <p>pedagog / pedagog123</p>
+    </div>
+</div>
+</div>
+
+<script>
+function loginForm() {
+    return {
+        username: '', password: '', error: '', loading: false,
+        async login() {
+            this.error = ''; this.loading = true;
+            try {
+                const r = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username: this.username, password: this.password }),
+                });
+                if (!r.ok) {
+                    const d = await r.json().catch(() => ({}));
+                    this.error = d.detail || 'Кирүү катасы';
+                    return;
+                }
+                window.location.href = '/';
+            } catch (e) {
+                this.error = 'Тармактык ката';
+            } finally {
+                this.loading = false;
+            }
+        },
+    };
+}
+</script>
+
+</body>
+</html>
