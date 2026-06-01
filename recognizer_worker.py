@@ -1,5 +1,15 @@
 """
 Background worker that processes a camera stream during an active lesson.
+
+Optionally shows a native OpenCV window with live video + bbox + name + emotion overlay.
+Set SHOW_WINDOW = False to run headless on a server.
+
+Hotkeys (when window is focused):
+Q / Esc  - close window (worker keeps running headless)
+F        - toggle fullscreen
+S        - save screenshot to screenshots/<lesson_id>_<ts>.jpg
+Space    - pause/resume rendering (worker keeps running)
+R        - force reconnect to camera
 """
 
 import os
@@ -15,10 +25,10 @@ from models import (
     SessionLocal, Student, Lesson, Attendance, EmotionLog, Alert,
 )
 
-
+# ---------- Config ----------
 RTSP_URL = os.environ.get(
     "RTSP_URL",
-    "rtsp://admin:Aknie12@192.168.205.14:554/h264/ch1/main/av_stream",
+    "rtsp://admin:Akniet12@192.168.205.14:554/h264/ch1/main/av_stream",
 )
 RECOG_EVERY_N_FRAMES = 8
 EMOTION_EVERY_N_FRAMES = 15
@@ -31,21 +41,17 @@ EMOTION_LABELS = [
 ]
 RECONNECT_DELAY_S = 5.0
 
-SHOW_WINDOW = os.environ.get("SHOW_WINDOW", "0") not in ("0", "false", "False")
-WINDOW_DISPLAY_W = 1280
+# ---------- Live window config ----------
+SHOW_WINDOW = os.environ.get("SHOW_WINDOW", "1") not in ("0", "false", "False")
+WINDOW_DISPLAY_W = 1280     # downscale for display (camera is 1080p)
 EMOTION_EMOJI = {
-    "happy": ":)",
-    "neutral": "-",
-    "surprise": "!",
-    "sad": ":(",
-    "angry": ">:(",
-    "disgust": "X(",
-    "fear": "D:",
-    "contempt": ":/",
+    "happy": ":)", "neutral": "-", "surprise": "!",
+    "sad": ":(", "angry": ">:(", "disgust": "X(", "fear": "D:", "contempt": ":/",
 }
 SCREENSHOT_DIR = Path("screenshots")
 
 
+# ---------- Lazy model loaders ----------
 _insightface = None
 _emotion_session = None
 
@@ -70,7 +76,7 @@ def get_emotion_session():
         import onnxruntime as ort
         model_path = Path("models/emotion-ferplus-8.onnx")
         if not model_path.exists():
-            print("[worker] WARNING: emotion model not found")
+            print("[worker] WARNING: emotion model not found at " + str(model_path))
             return None
         print("[worker] Loading emotion model ferplus-8 ...")
         _emotion_session = ort.InferenceSession(
@@ -97,6 +103,7 @@ def classify_emotion(face_bgr):
 
 
 def open_camera():
+    """Open the RTSP stream. Returns VideoCapture or None."""
     os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
         "rtsp_transport;tcp|hwaccel;d3d11va|stimeout;5000000"
     )
@@ -111,6 +118,44 @@ def open_camera():
     return cap
 
 
+# ---------- Drawing helpers ----------
+def _color_for(state):
+    # state: "known_positive" | "known_neutral" | "known_negative" | "unknown"
+    return {
+        "known_positive": (0, 200, 0),       # green
+        "known_neutral":  (0, 200, 200),     # yellow
+        "known_negative": (0, 0, 220),       # red
+        "unknown":        (40, 40, 220),     # red-ish
+    }.get(state, (200, 200, 200))
+
+
+def _draw_label(img, x1, y1, x2, y2, name, emotion, color):
+    cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+    text = name
+    if emotion:
+        text = name + "  " + emotion + " " + EMOTION_EMOJI.get(emotion, "")
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+    y_text = max(y1 - 8, th + 4)
+    cv2.rectangle(img, (x1, y_text - th - 6), (x1 + tw + 8, y_text + 4), color, -1)
+    cv2.putText(img, text, (x1 + 4, y_text), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+
+
+def _draw_hud(img, lesson_id, fps, recognized_count, visible_count, alerts_count, paused):
+    h, w = img.shape[:2]
+    # Top-left status bar
+    cv2.rectangle(img, (0, 0), (w, 36), (0, 0, 0), -1)
+    status = "PAUSED" if paused else "LIVE"
+    line = "[" + status + "]  Lesson #" + str(lesson_id) + "   FPS: " + str(int(fps)) + \
+           "   Visible: " + str(visible_count) + "/" + str(recognized_count) + \
+           "   Alerts: " + str(alerts_count)
+    cv2.putText(img, line, (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+    # Bottom-right hint
+    hint = "Q-quit  F-fullscreen  S-screenshot  Space-pause  R-reconnect"
+    (tw, _), _ = cv2.getTextSize(hint, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+    cv2.putText(img, hint, (w - tw - 10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
+
+
+# ---------- LessonWorker ----------
 class LessonWorker(threading.Thread):
     def __init__(self, lesson_id, event_queue):
         super().__init__(daemon=True)
@@ -124,6 +169,16 @@ class LessonWorker(threading.Thread):
         self.alerts_fired = set()
         self.currently_visible = set()
         self.VISIBLE_TIMEOUT_S = 3.0
+
+        # Window state
+        self.window_name = "Camera - Lesson #" + str(lesson_id)
+        self.window_open = False
+        self.fullscreen = False
+        self.paused = False
+        self.last_overlay = {}   # student_id -> (bbox, name, emotion, ts) for drawing between recog frames
+        self.OVERLAY_TTL_S = 1.0
+        self.fps_ema = 0.0
+        self.last_frame_ts = None
 
     def stop(self):
         self.stop_flag.set()
@@ -243,11 +298,126 @@ class LessonWorker(threading.Thread):
                     self.fire_alert(
                         student_id,
                         "negative_emotion",
-                        student_name + " negative emotion (" + emotion + ")",
+                        student_name + " 2 минуты подряд испытывает негативные эмоции (" + emotion + ")",
                     )
         else:
             self.neg_emotion_start.pop(student_id, None)
         self.last_emotion[student_id] = emotion
+
+    # ---------- Window helpers ----------
+    def _ensure_window(self):
+        if not SHOW_WINDOW or self.window_open:
+            return
+        try:
+            cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(self.window_name, WINDOW_DISPLAY_W, int(WINDOW_DISPLAY_W * 9 / 16))
+            self.window_open = True
+        except Exception as e:
+            print("[worker] cannot open window: " + str(e))
+
+    def _close_window(self):
+        if self.window_open:
+            try:
+                cv2.destroyWindow(self.window_name)
+            except Exception:
+                pass
+            self.window_open = False
+
+    def _toggle_fullscreen(self):
+        if not self.window_open:
+            return
+        self.fullscreen = not self.fullscreen
+        try:
+            cv2.setWindowProperty(
+                self.window_name,
+                cv2.WND_PROP_FULLSCREEN,
+                cv2.WINDOW_FULLSCREEN if self.fullscreen else cv2.WINDOW_NORMAL,
+            )
+        except Exception:
+            pass
+
+    def _save_screenshot(self, frame):
+        try:
+            SCREENSHOT_DIR.mkdir(exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = SCREENSHOT_DIR / ("lesson" + str(self.lesson_id) + "_" + ts + ".jpg")
+            cv2.imwrite(str(path), frame)
+            print("[worker] screenshot saved: " + str(path))
+        except Exception as e:
+            print("[worker] screenshot error: " + str(e))
+
+    def _classify_state(self, sid, emotion):
+        if sid is None:
+            return "unknown"
+        if emotion in NEG_EMOTIONS:
+            return "known_negative"
+        if emotion in ("happy", "surprise"):
+            return "known_positive"
+        return "known_neutral"
+
+    def _render_and_show(self, frame, roster):
+        if not SHOW_WINDOW:
+            return True   # keep running
+
+        self._ensure_window()
+        if not self.window_open:
+            return True
+
+        # FPS
+        now = time.time()
+        if self.last_frame_ts is not None:
+            dt = now - self.last_frame_ts
+            if dt > 0:
+                inst_fps = 1.0 / dt
+                self.fps_ema = 0.9 * self.fps_ema + 0.1 * inst_fps if self.fps_ema > 0 else inst_fps
+        self.last_frame_ts = now
+
+        # Draw overlays from recent recognitions
+        display = frame.copy()
+        cutoff = time.time() - self.OVERLAY_TTL_S
+        stale = [k for k, v in self.last_overlay.items() if v[3] < cutoff]
+        for k in stale:
+            self.last_overlay.pop(k, None)
+
+        for key, (bbox, name, emotion, _ts) in self.last_overlay.items():
+            x1, y1, x2, y2 = bbox
+            state = self._classify_state(key if isinstance(key, int) else None, emotion)
+            color = _color_for(state)
+            _draw_label(display, x1, y1, x2, y2, name, emotion, color)
+
+        recognized_count = len(roster)
+        _draw_hud(
+            display, self.lesson_id, self.fps_ema,
+            recognized_count, len(self.currently_visible),
+            len(self.alerts_fired), self.paused,
+        )
+
+        # Downscale for display if huge
+        h, w = display.shape[:2]
+        if w > WINDOW_DISPLAY_W:
+            scale = WINDOW_DISPLAY_W / float(w)
+            display = cv2.resize(display, (WINDOW_DISPLAY_W, int(h * scale)))
+
+        try:
+            cv2.imshow(self.window_name, display)
+        except Exception:
+            self.window_open = False
+            return True
+
+        key = cv2.waitKey(1) & 0xFF
+        if key in (ord('q'), ord('Q'), 27):    # Q or Esc
+            print("[worker] window closed by user (Q/Esc) - going headless")
+            self._close_window()
+        elif key in (ord('f'), ord('F')):
+            self._toggle_fullscreen()
+        elif key in (ord('s'), ord('S')):
+            self._save_screenshot(display)
+        elif key == 32:    # Space
+            self.paused = not self.paused
+        elif key in (ord('r'), ord('R')):
+            return False   # signal reconnect
+
+        return True
 
     def run(self):
         print("[worker " + str(self.lesson_id) + "] starting (SHOW_WINDOW=" + str(SHOW_WINDOW) + ")")
@@ -256,7 +426,7 @@ class LessonWorker(threading.Thread):
 
         cap = open_camera()
         if cap is None:
-            print("[worker] CAMERA OFFLINE - wait-and-retry")
+            print("[worker " + str(self.lesson_id) + "] CAMERA OFFLINE - wait-and-retry")
             self.push_event({
                 "type": "worker_started",
                 "lesson_id": self.lesson_id,
@@ -266,7 +436,7 @@ class LessonWorker(threading.Thread):
             self.push_event({
                 "type": "worker_error",
                 "lesson_id": self.lesson_id,
-                "message": "Camera offline",
+                "message": "Камера офлайн. Текшерип жатам...",
             })
             while not self.stop_flag.is_set():
                 for _ in range(int(RECONNECT_DELAY_S * 10)):
@@ -277,6 +447,7 @@ class LessonWorker(threading.Thread):
                     break
                 cap = open_camera()
                 if cap is not None:
+                    print("[worker " + str(self.lesson_id) + "] camera online, switching to live")
                     self.push_event({
                         "type": "worker_started",
                         "lesson_id": self.lesson_id,
@@ -294,6 +465,7 @@ class LessonWorker(threading.Thread):
             })
             self.run_live(cap, roster)
 
+        self._close_window()
         print("[worker " + str(self.lesson_id) + "] stopped")
         self.push_event({"type": "worker_stopped", "lesson_id": self.lesson_id})
 
@@ -307,13 +479,14 @@ class LessonWorker(threading.Thread):
             if not ok or frame is None:
                 consecutive_failures += 1
                 if consecutive_failures > 100:
+                    print("[worker] too many read failures - reconnecting")
                     cap.release()
                     cap = open_camera()
                     if cap is None:
                         self.push_event({
                             "type": "worker_error",
                             "lesson_id": self.lesson_id,
-                            "message": "Camera lost",
+                            "message": "Камера менен байланыш үзүлдү",
                         })
                         return
                     consecutive_failures = 0
@@ -323,8 +496,8 @@ class LessonWorker(threading.Thread):
 
             frame_idx += 1
 
-            do_recog = (frame_idx % RECOG_EVERY_N_FRAMES == 0)
-            do_emotion = (frame_idx % EMOTION_EVERY_N_FRAMES == 0)
+            do_recog = (frame_idx % RECOG_EVERY_N_FRAMES == 0) and (not self.paused)
+            do_emotion = (frame_idx % EMOTION_EVERY_N_FRAMES == 0) and (not self.paused)
 
             if do_recog:
                 try:
@@ -334,16 +507,30 @@ class LessonWorker(threading.Thread):
                     print("[worker] insightface error: " + str(e))
                     faces = []
 
+                seen_this_pass = []
+
                 for f in faces:
                     emb = f.normed_embedding
                     sid, sim = self.match_student(emb, roster)
 
+                    # rescale bbox to full frame
+                    x1, y1, x2, y2 = [int(v) for v in f.bbox]
+                    x1 = int(x1 / 0.7); y1 = int(y1 / 0.7)
+                    x2 = int(x2 / 0.7); y2 = int(y2 / 0.7)
+                    x1 = max(0, x1); y1 = max(0, y1)
+                    x2 = min(frame.shape[1], x2); y2 = min(frame.shape[0], y2)
+
                     if sid is None:
+                        # unknown - still draw overlay
+                        self.last_overlay["unk_" + str(id(f))] = (
+                            (x1, y1, x2, y2), "?", "", time.time(),
+                        )
                         continue
 
                     student_name = next((st["name"] for st in roster if st["id"] == sid), "?")
                     state = self.mark_attendance(sid)
                     self.last_seen[sid] = datetime.utcnow()
+                    seen_this_pass.append(sid)
 
                     if state == "entered":
                         self.push_event({
@@ -355,30 +542,33 @@ class LessonWorker(threading.Thread):
                         })
                         self.currently_visible.add(sid)
 
-                    if do_emotion:
+                    emo_for_overlay = self.last_emotion.get(sid, "")
+
+                    if do_emotion and x2 > x1 and y2 > y1:
                         try:
-                            x1, y1, x2, y2 = [int(v) for v in f.bbox]
-                            x1 = int(x1 / 0.7); y1 = int(y1 / 0.7)
-                            x2 = int(x2 / 0.7); y2 = int(y2 / 0.7)
-                            x1 = max(0, x1); y1 = max(0, y1)
-                            x2 = min(frame.shape[1], x2); y2 = min(frame.shape[0], y2)
-                            if x2 > x1 and y2 > y1:
-                                crop = frame[y1:y2, x1:x2]
-                                emo = classify_emotion(crop)
-                                prev = self.last_emotion.get(sid)
-                                if emo != prev:
-                                    self.log_emotion(sid, emo)
-                                    self.update_emotion_state(sid, emo, student_name)
-                                    self.push_event({
-                                        "type": "emotion",
-                                        "lesson_id": self.lesson_id,
-                                        "student_id": sid,
-                                        "student_name": student_name,
-                                        "emotion": emo,
-                                    })
+                            crop = frame[y1:y2, x1:x2]
+                            emo = classify_emotion(crop)
+                            prev = self.last_emotion.get(sid)
+                            if emo != prev:
+                                self.log_emotion(sid, emo)
+                                self.update_emotion_state(sid, emo, student_name)
+                                self.push_event({
+                                    "type": "emotion",
+                                    "lesson_id": self.lesson_id,
+                                    "student_id": sid,
+                                    "student_name": student_name,
+                                    "emotion": emo,
+                                })
+                            emo_for_overlay = emo
                         except Exception as e:
                             print("[worker] emotion error: " + str(e))
 
+                    # Update overlay for this student
+                    self.last_overlay[sid] = (
+                        (x1, y1, x2, y2), student_name, emo_for_overlay, time.time(),
+                    )
+
+                # cleanup currently_visible
                 now = datetime.utcnow()
                 left = []
                 for sid in list(self.currently_visible):
@@ -388,9 +578,25 @@ class LessonWorker(threading.Thread):
                 for sid in left:
                     self.currently_visible.discard(sid)
 
+            # Render window every frame (uses cached overlays)
+            keep_going = self._render_and_show(frame, roster)
+            if not keep_going:
+                # Reconnect requested via R
+                print("[worker] reconnect requested via hotkey")
+                cap.release()
+                cap = open_camera()
+                if cap is None:
+                    self.push_event({
+                        "type": "worker_error",
+                        "lesson_id": self.lesson_id,
+                        "message": "Кайра туташуу ишке ашкан жок",
+                    })
+                    return
+
         cap.release()
 
 
+# ---------- Registry ----------
 _workers = {}
 
 
