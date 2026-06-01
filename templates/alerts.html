@@ -1,0 +1,300 @@
+{% extends "base.html" %}
+
+{% block title %}Эскертүүлөр &middot; Мектеп таануу{% endblock %}
+
+{% block content %}
+<div x-data="alertsPage()" x-init="init()" class="space-y-6">
+
+<!-- KPI cards -->
+<div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+  <div class="bg-white rounded-xl shadow p-5">
+    <div class="text-slate-500 text-xs uppercase font-medium">Жалпы эскертүүлөр</div>
+    <div class="text-3xl font-bold text-slate-800 mt-2" x-text="stats.total || 0"></div>
+  </div>
+  <div class="bg-white rounded-xl shadow p-5 border-l-4 border-red-500">
+    <div class="text-slate-500 text-xs uppercase font-medium">Жаңы</div>
+    <div class="text-3xl font-bold text-red-600 mt-2" x-text="(stats.by_status && stats.by_status.new) || 0"></div>
+  </div>
+  <div class="bg-white rounded-xl shadow p-5 border-l-4 border-amber-500">
+    <div class="text-slate-500 text-xs uppercase font-medium">Көрүлдү</div>
+    <div class="text-3xl font-bold text-amber-600 mt-2" x-text="(stats.by_status && stats.by_status.seen) || 0"></div>
+  </div>
+  <div class="bg-white rounded-xl shadow p-5 border-l-4 border-emerald-500">
+    <div class="text-slate-500 text-xs uppercase font-medium">Чечилди</div>
+    <div class="text-3xl font-bold text-emerald-600 mt-2" x-text="(stats.by_status && stats.by_status.resolved) || 0"></div>
+  </div>
+</div>
+
+<!-- Filter bar + actions -->
+<div class="bg-white rounded-xl shadow p-4 flex flex-wrap gap-3 items-center">
+  <div class="text-slate-700 font-medium mr-2">🔍 Чыпка:</div>
+
+  <select x-model="filterStatus" @change="loadAlerts()"
+          class="border border-slate-300 rounded-lg px-3 py-2 text-sm">
+    <option value="">Бардык статустар</option>
+    <option value="new">🔴 Жаңы</option>
+    <option value="seen">🟡 Көрүлдү</option>
+    <option value="resolved">🟢 Чечилди</option>
+  </select>
+
+  <select x-model="filterType" @change="loadAlerts()"
+          class="border border-slate-300 rounded-lg px-3 py-2 text-sm">
+    <option value="">Бардык түрлөр</option>
+    <option value="negative_emotion">😟 Терс эмоция</option>
+    <option value="student_left">🚪 Окуучу кетти</option>
+    <option value="unknown_face">❓ Белгисиз бет</option>
+  </select>
+
+  <div class="ml-auto flex gap-2">
+    <button @click="markAllSeen()" :disabled="!hasNew"
+            :class="hasNew ? 'bg-amber-600 hover:bg-amber-700' : 'bg-slate-300 cursor-not-allowed'"
+            class="text-white text-sm font-medium px-4 py-2 rounded-lg">
+      ✓ Баарын белгилөө
+    </button>
+    <button @click="confirmDeleteResolved()"
+            class="bg-slate-600 hover:bg-slate-700 text-white text-sm font-medium px-4 py-2 rounded-lg">
+      🗑 Чечилгендерди өчүрүү
+    </button>
+    <button @click="loadAlerts()"
+            class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg">
+      🔄 Жаңылоо
+    </button>
+  </div>
+</div>
+
+<!-- Alerts list -->
+<div class="bg-white rounded-xl shadow overflow-hidden">
+  <div class="p-4 border-b border-slate-200 flex items-center justify-between">
+    <h3 class="text-lg font-bold text-slate-800">📋 Эскертүүлөрдүн тизмеси</h3>
+    <span class="text-sm text-slate-500" x-text="alerts.length + ' жазуу'"></span>
+  </div>
+
+  <template x-if="alerts.length === 0">
+    <div class="p-12 text-center">
+      <div class="text-6xl mb-3">🎉</div>
+      <p class="text-slate-500">Эскертүүлөр жок. Бардыгы жакшы!</p>
+    </div>
+  </template>
+
+  <div class="divide-y divide-slate-100">
+    <template x-for="a in alerts" :key="a.id">
+      <div class="p-4 hover:bg-slate-50 transition flex gap-4"
+           :class="a.status === 'new' ? 'bg-red-50/50' : ''">
+
+        <!-- Photo / icon -->
+        <div class="flex-shrink-0">
+          <template x-if="a.student_photo">
+            <img :src="a.student_photo" :alt="a.student_name"
+                 class="w-14 h-14 rounded-full object-cover border-2"
+                 :class="statusBorderColor(a.status)">
+          </template>
+          <template x-if="!a.student_photo">
+            <div class="w-14 h-14 rounded-full flex items-center justify-center text-2xl"
+                 :class="statusBgColor(a.status)"
+                 x-text="alertIcon(a.alert_type)"></div>
+          </template>
+        </div>
+
+        <!-- Body -->
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="font-bold text-slate-800" x-text="a.student_name || 'Белгисиз'"></span>
+            <span class="text-xs px-2 py-0.5 rounded-full font-medium"
+                  :class="typeBadgeColor(a.alert_type)"
+                  x-text="alertTypeLabel(a.alert_type)"></span>
+            <span class="text-xs px-2 py-0.5 rounded-full font-medium"
+                  :class="statusBadgeColor(a.status)"
+                  x-text="statusLabel(a.status)"></span>
+            <span class="text-xs text-slate-400" x-text="formatDate(a.created_at)"></span>
+          </div>
+          <p class="text-sm text-slate-700 mt-1" x-text="a.message"></p>
+          <p class="text-xs text-slate-500 mt-1" x-show="a.lesson_label">
+            📚 <span x-text="a.lesson_label"></span>
+            <span x-show="a.class_name"> · <span x-text="a.class_name"></span></span>
+          </p>
+        </div>
+
+        <!-- Actions -->
+        <div class="flex-shrink-0 flex flex-col gap-1 items-end">
+          <button x-show="a.status === 'new'" @click="updateStatus(a.id, 'seen')"
+                  class="bg-amber-500 hover:bg-amber-600 text-white text-xs font-medium px-3 py-1 rounded">
+            👀 Көрдүм
+          </button>
+          <button x-show="a.status !== 'resolved'" @click="updateStatus(a.id, 'resolved')"
+                  class="bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-medium px-3 py-1 rounded">
+            ✓ Чечилди
+          </button>
+          <button @click="deleteAlert(a.id)"
+                  class="text-red-500 hover:text-red-700 text-xs font-medium">
+            🗑 Өчүрүү
+          </button>
+        </div>
+      </div>
+    </template>
+  </div>
+</div>
+
+</div>
+
+<script>
+function alertsPage() {
+return {
+  alerts: [],
+  stats: { total: 0, today: 0, by_status: {}, by_type: {} },
+  filterStatus: '',
+  filterType: '',
+  ws: null,
+
+  get hasNew() {
+    return ((this.stats.by_status && this.stats.by_status.new) || 0) > 0;
+  },
+
+  async init() {
+    await Promise.all([this.loadStats(), this.loadAlerts()]);
+    this.connectWS();
+  },
+
+  connectWS() {
+    try {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      this.ws = new WebSocket(proto + '//' + location.host + '/ws');
+      this.ws.onmessage = (evt) => {
+        try {
+          const data = JSON.parse(evt.data);
+          if (data.type === 'alert' || data.type === 'new_alert') {
+            this.loadStats();
+            this.loadAlerts();
+            this.beep();
+          } else if (data.type === 'alert_updated' || data.type === 'alerts_bulk_update') {
+            this.loadStats();
+            this.loadAlerts();
+          }
+        } catch (e) {}
+      };
+      this.ws.onclose = () => { setTimeout(() => this.connectWS(), 3000); };
+    } catch (e) {
+      console.warn('WS connect failed', e);
+    }
+  },
+
+  beep() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'sine';
+      o.frequency.value = 880;
+      g.gain.value = 0.08;
+      o.connect(g); g.connect(ctx.destination);
+      o.start(); setTimeout(() => { o.stop(); ctx.close(); }, 140);
+    } catch (e) {}
+  },
+
+  async loadStats() {
+    const r = await fetch('/api/alerts/stats');
+    this.stats = await r.json();
+  },
+
+  async loadAlerts() {
+    const params = new URLSearchParams();
+    if (this.filterStatus) params.set('status', this.filterStatus);
+    if (this.filterType) params.set('alert_type', this.filterType);
+    params.set('limit', '200');
+    const r = await fetch('/api/alerts?' + params.toString());
+    this.alerts = await r.json();
+  },
+
+  async updateStatus(id, newStatus) {
+    const r = await fetch('/api/alerts/' + id, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: newStatus }),
+    });
+    if (r.ok) await Promise.all([this.loadStats(), this.loadAlerts()]);
+  },
+
+  async deleteAlert(id) {
+    if (!confirm('Чындап эле бул эскертүүнү өчүрөсүзбү?')) return;
+    const r = await fetch('/api/alerts/' + id, { method: 'DELETE' });
+    if (r.ok) await Promise.all([this.loadStats(), this.loadAlerts()]);
+  },
+
+  async markAllSeen() {
+    if (!confirm('Бардык жаңы эскертүүлөрдү "көрүлдү" деп белгилөө?')) return;
+    const r = await fetch('/api/alerts/mark_all_seen', { method: 'POST' });
+    if (r.ok) await Promise.all([this.loadStats(), this.loadAlerts()]);
+  },
+
+  async confirmDeleteResolved() {
+    if (!confirm('Бардык чечилген эскертүүлөрдү өчүрөсүзбү?')) return;
+    const r = await fetch('/api/alerts?status=resolved', { method: 'DELETE' });
+    if (r.ok) await Promise.all([this.loadStats(), this.loadAlerts()]);
+  },
+
+  alertTypeLabel(t) {
+    const m = {
+      negative_emotion: '😟 Терс эмоция',
+      student_left: '🚪 Окуучу кетти',
+      unknown_face: '❓ Белгисиз бет',
+    };
+    return m[t] || t;
+  },
+
+  alertIcon(t) {
+    const m = {
+      negative_emotion: '😟',
+      student_left: '🚪',
+      unknown_face: '❓',
+    };
+    return m[t] || '⚠️';
+  },
+
+  typeBadgeColor(t) {
+    const m = {
+      negative_emotion: 'bg-purple-100 text-purple-700',
+      student_left: 'bg-orange-100 text-orange-700',
+      unknown_face: 'bg-slate-200 text-slate-700',
+    };
+    return m[t] || 'bg-slate-100 text-slate-600';
+  },
+
+  statusLabel(s) {
+    return s === 'new' ? '🔴 Жаңы' : s === 'seen' ? '🟡 Көрүлдү' : s === 'resolved' ? '🟢 Чечилди' : s;
+  },
+
+  statusBadgeColor(s) {
+    return s === 'new' ? 'bg-red-100 text-red-700'
+      : s === 'seen' ? 'bg-amber-100 text-amber-700'
+      : 'bg-emerald-100 text-emerald-700';
+  },
+
+  statusBorderColor(s) {
+    return s === 'new' ? 'border-red-400'
+      : s === 'seen' ? 'border-amber-400'
+      : 'border-emerald-400';
+  },
+
+  statusBgColor(s) {
+    return s === 'new' ? 'bg-red-100'
+      : s === 'seen' ? 'bg-amber-100'
+      : 'bg-emerald-100';
+  },
+
+  formatDate(iso) {
+    if (!iso) return '';
+    try {
+      const d = new Date(iso);
+      const now = new Date();
+      const diffMs = now - d;
+      const diffMin = Math.floor(diffMs / 60000);
+      if (diffMin < 1) return 'азыр эле';
+      if (diffMin < 60) return diffMin + ' мүн. мурун';
+      const diffHr = Math.floor(diffMin / 60);
+      if (diffHr < 24) return diffHr + ' саат мурун';
+      return d.toLocaleDateString('ru-RU') + ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    } catch (e) { return iso; }
+  },
+};
+}
+</script>
+{% endblock %}
