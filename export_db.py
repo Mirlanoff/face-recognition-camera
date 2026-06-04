@@ -75,8 +75,8 @@ def cmd_lessons(args):
         rows = []
         for l in db.query(Lesson).all():
             c = db.query(SchoolClass).filter(SchoolClass.id == l.class_id).first()
-            rows.append([l.id, c.name if c else "?", l.start_time, l.end_time])
-        fmt_table(["ID", "Класс", "Начало", "Конец"], rows, [5, 15, 20, 20])
+            rows.append([l.id, c.name if c else "?", l.started_at, l.ended_at])
+        fmt_table(["ID", "Класс", "Начало", "Конец"], rows, [5, 15, 22, 22])
     finally:
         db.close()
 
