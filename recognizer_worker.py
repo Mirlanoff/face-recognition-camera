@@ -33,8 +33,7 @@ RTSP_URL = os.environ.get(
 RECOG_EVERY_N_FRAMES = 8
 EMOTION_EVERY_N_FRAMES = 15
 MATCH_THRESHOLD = 0.45
-NEG_EMOTION_ALERT_SECONDS = 15            # was 120 — faster trigger
-NEG_EMOTION_ALERT_COOLDOWN_S = 60         # new — min seconds between repeated alerts for same student
+NEG_EMOTION_ALERT_COOLDOWN_S = 60         # min seconds between repeated alerts for the same student
 NEG_EMOTIONS = {"sad", "angry", "fear", "disgust"}
 EMOTION_LABELS = [
 "neutral", "happiness", "surprise", "sadness",
@@ -165,11 +164,10 @@ def __init__(self, lesson_id, event_queue):
     self.loop = None
     self.stop_flag = threading.Event()
     self.last_seen = {}
-    self.neg_emotion_start = {}
     self.last_emotion = {}
-    self.alerts_fired = set()                # kept for HUD counter (total alerts this session)
-    self.last_alert_at = {}                  # new — (student_id, alert_type) -> datetime of last fire (for cooldown)
-    self.alerts_count = 0                    # new — total alert fires this session (for HUD)
+    self.alerts_fired = set()                # kept for backward compatibility
+    self.last_alert_at = {}                  # (student_id, alert_type) -> datetime of last fire (for cooldown)
+    self.alerts_count = 0                    # total alert fires this session (for HUD)
     self.currently_visible = set()
     self.VISIBLE_TIMEOUT_S = 3.0
 
@@ -295,23 +293,14 @@ def match_student(self, embedding, roster):
     return None, best_sim
 
 def update_emotion_state(self, student_id, emotion, student_name):
-    now = datetime.utcnow()
+    # Fire alert immediately on first negative emotion detected.
+    # Repeat firings for the same student are throttled by NEG_EMOTION_ALERT_COOLDOWN_S in fire_alert().
     if emotion in NEG_EMOTIONS:
-        start = self.neg_emotion_start.get(student_id)
-        if start is None:
-            self.neg_emotion_start[student_id] = now
-        else:
-            elapsed = (now - start).total_seconds()
-            if elapsed >= NEG_EMOTION_ALERT_SECONDS:
-                self.fire_alert(
-                    student_id,
-                    "negative_emotion",
-                    student_name + " " + str(NEG_EMOTION_ALERT_SECONDS) + " секунд подряд испытывает негативные эмоции (" + emotion + ")",
-                )
-                # Reset timer so next 15-sec window can trigger another alert (subject to 60s cooldown in fire_alert)
-                self.neg_emotion_start[student_id] = now
-    else:
-        self.neg_emotion_start.pop(student_id, None)
+        self.fire_alert(
+            student_id,
+            "negative_emotion",
+            student_name + " негативдүү эмоция аныкталды (" + emotion + ")",
+        )
     self.last_emotion[student_id] = emotion
 
 # ---------- Window helpers ----------
